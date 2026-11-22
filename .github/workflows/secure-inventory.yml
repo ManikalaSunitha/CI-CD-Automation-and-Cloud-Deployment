@@ -119,6 +119,7 @@ jobs:
     outputs:
       image_uri: ${{ steps.image.outputs.uri }}
       ecr_login_result: ${{ steps.ecr_login.outcome }}
+      ecr_repository_check_result: ${{ steps.ecr_repository_check.outcome }}
       image_build_result: ${{ steps.image_build.outcome }}
       image_scan_result: ${{ steps.image_scan.outcome }}
       image_scan_details: ${{ steps.image_scan_summary.outputs.details }}
@@ -139,6 +140,42 @@ jobs:
       - name: Log in to Amazon ECR
         id: ecr_login
         uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Verify the ECR repository exists in the configured account and region
+        id: ecr_repository_check
+        env:
+          REGISTRY: ${{ steps.ecr_login.outputs.registry }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${AWS_REGION:?Set the AWS_REGION Actions variable}"
+          : "${ECR_REPOSITORY:?Set the ECR_REPOSITORY Actions variable}"
+          : "${REGISTRY:?ECR login did not return a registry}"
+
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          registry_account="${REGISTRY%%.*}"
+          if [ "$account_id" != "$registry_account" ]; then
+            echo "::error::AWS credentials resolve to account $account_id, but ECR login selected registry account $registry_account."
+            exit 1
+          fi
+
+          if ! repository_uri="$(aws ecr describe-repositories \
+            --registry-id "$account_id" \
+            --repository-names "$ECR_REPOSITORY" \
+            --region "$AWS_REGION" \
+            --query 'repositories[0].repositoryUri' \
+            --output text 2>ecr-repository-error.txt)"; then
+            cat ecr-repository-error.txt >&2
+            echo "::error::ECR repository '$ECR_REPOSITORY' was not found or is not accessible in account $account_id, region $AWS_REGION. Create it there or correct AWS_REGION/ECR_REPOSITORY and the AWS credentials."
+            exit 1
+          fi
+
+          expected_uri="$REGISTRY/$ECR_REPOSITORY"
+          if [ "$repository_uri" != "$expected_uri" ]; then
+            echo "::error::Resolved ECR repository URI '$repository_uri' does not match expected '$expected_uri'."
+            exit 1
+          fi
+          echo "Verified ECR destination: $repository_uri"
 
       - name: Build image
         id: image_build
@@ -371,6 +408,7 @@ jobs:
       FILESYSTEM_SCAN_RESULT: ${{ needs.quality.outputs.filesystem_scan_result }}
       TESTS_COVERAGE_RESULT: ${{ needs.quality.outputs.tests_coverage_result }}
       ECR_LOGIN_RESULT: ${{ needs.build-scan-push.outputs.ecr_login_result }}
+      ECR_REPOSITORY_CHECK_RESULT: ${{ needs.build-scan-push.outputs.ecr_repository_check_result }}
       IMAGE_BUILD_RESULT: ${{ needs.build-scan-push.outputs.image_build_result }}
       IMAGE_SCAN_RESULT: ${{ needs.build-scan-push.outputs.image_scan_result }}
       IMAGE_SCAN_DETAILS: ${{ needs.build-scan-push.outputs.image_scan_details }}
@@ -389,6 +427,7 @@ jobs:
             echo "| Maven tests and JaCoCo coverage gate | ${TESTS_COVERAGE_RESULT:-${QUALITY_RESULT}} |"
             echo "| SonarCloud Automatic Analysis | Runs independently; check SonarCloud project |"
             echo "| ECR login | ${ECR_LOGIN_RESULT:-${BUILD_RESULT}} |"
+            echo "| ECR repository preflight | ${ECR_REPOSITORY_CHECK_RESULT:-${BUILD_RESULT}} |"
             echo "| Docker image build | ${IMAGE_BUILD_RESULT:-${BUILD_RESULT}} |"
             echo "| Trivy container image scan | ${IMAGE_SCAN_RESULT:-${BUILD_RESULT}} |"
             echo "| ECR image push | ${ECR_PUSH_RESULT:-${BUILD_RESULT}} |"

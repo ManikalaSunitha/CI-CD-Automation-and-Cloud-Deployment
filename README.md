@@ -90,9 +90,40 @@ The workflow uses a dedicated IAM user access key because this deployment is not
 
 Keep the IAM user's permissions narrow:
 
-- **ECR push:** `ecr:GetAuthorizationToken` and image upload actions (`BatchCheckLayerAvailability`, `InitiateLayerUpload`, `UploadLayerPart`, `CompleteLayerUpload`, `PutImage`) limited to the `secure-inventory` repository.
+- **ECR push:** `ecr:GetAuthorizationToken` requires `"Resource": "*"`. Grant `ecr:DescribeRepositories`, `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, and `ecr:PutImage` only on the exact repository ARN. For the configured `manikalasunitha/basic_spring_app` repository, that ARN is `arn:aws:ecr:eu-north-1:280113624212:repository/manikalasunitha/basic_spring_app`. The repository path is part of the ARN; granting access to `repository/basic_spring_app`, `repository/manikalasunitha`, or the old `repository/secure-inventory` does not grant access to this repository.
 - **ECS deploy:** `ecs:DescribeTaskDefinition`, `ecs:RegisterTaskDefinition`, `ecs:DescribeServices`, and `ecs:UpdateService` for only the relevant task definitions/services; `iam:PassRole` only for the ECS task and execution roles, with `iam:PassedToService` restricted to `ecs-tasks.amazonaws.com`. Add actual resource ARNs after creating these resources; do not use placeholder ARNs or the cluster ARN for service permissions.
 - **ECS task execution role:** ECR pull permissions, CloudWatch log permissions, and `secretsmanager:GetSecretValue` for the admin secret. Do not give the app task role access to the admin secret.
+
+For the current image-push `403`, update the **IAM user whose access key is stored in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`**. In IAM → Users → that user → Permissions, attach an inline policy like this (the account, region, and repository below match the current workflow destination):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EcrLogin",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "PushSecureInventoryImage",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:DescribeRepositories",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:PutImage"
+      ],
+      "Resource": "arn:aws:ecr:eu-north-1:280113624212:repository/manikalasunitha/basic_spring_app"
+    }
+  ]
+}
+```
+
+The reported `403 Forbidden` is returned for a registry `HEAD` request to `/v2/manikalasunitha/basic_spring_app/blobs/...`, which is the layer-availability check during `docker push`. Since AWS credentials configuration, ECR login, image build, and the Trivy image scan succeeded, the immediate likely cause is that the IAM user's ECR upload actions are missing or scoped to the wrong repository ARN. If the policy above is already attached, check for an explicit deny in the IAM user's other policies, a permissions boundary, an AWS Organizations SCP, or an ECR repository policy. Verify the repository exists in `eu-north-1` in account `280113624212` and the workflow variable `ECR_REPOSITORY` is exactly `manikalasunitha/basic_spring_app`. The workflow now preflights the caller account and exact repository URI before building, but only an actual push can confirm layer-upload permissions.
 
 In GitHub **Settings → Secrets and variables → Actions → Secrets**, add these **repository secrets** using the dedicated IAM user's access key. Do not paste either value into chat, variables, files, or workflow logs:
 
@@ -108,7 +139,9 @@ In GitHub **Settings → Secrets and variables → Actions → Variables**, add:
 | Repository variable | Value |
 |---|---|
 | `AWS_REGION` | AWS region, for example `eu-north-1` |
-| `ECR_REPOSITORY` | ECR repository name, for example `secure-inventory` |
+| `ECR_REPOSITORY` | Exact ECR repository name, including any namespace path, for example `manikalasunitha/basic_spring_app` |
+
+For `ECR_REPOSITORY`, enter the name in the **Value** field; the variable **Name** remains `ECR_REPOSITORY`. Slashes are valid in an ECR repository name. If the ECR console shows `manikalasunitha` as a namespace/folder, use the complete repository path `manikalasunitha/basic_spring_app`, not just `manikalasunitha`. Confirm that this exact repository exists in the account and `AWS_REGION` used by the workflow. The IAM user's ECR upload policy must also allow the repository ARN ending in `repository/manikalasunitha/basic_spring_app`; otherwise the preflight or image push will fail.
 Do not add `SONAR_TOKEN` or Sonar analysis variables for this Automatic Analysis setup. In SonarCloud, keep Automatic Analysis enabled for the project and monitor its analysis result in the SonarCloud project page. It runs separately from this workflow, so it does not block ECR publishing or ECS deployment. If SonarCloud reports that Automatic Analysis conflicts with a CI scanner, ensure the Sonar scan action remains removed from this workflow.
 
 Create GitHub **environments** named `dev`, `qa`, and `prod`. In each environment, add:
