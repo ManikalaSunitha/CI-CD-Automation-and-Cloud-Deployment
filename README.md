@@ -62,49 +62,7 @@ The workflow is [`./.github/workflows/secure-inventory.yml`](./.github/workflows
 
 The workflow currently runs only when manually dispatched. Its input selects one of `dev`, `qa`, or `prod`; `deploy_to_ecs` defaults to false so you can run quality checks, build, scan, and push the image before ECS is ready. The run title and job names include the selected environment, and a final GitHub Actions summary lists each check's result. Enable ECS deployment only after the selected environment's ECS service/task definition and deployment settings are configured. EarlyBird scans the app repository's tracked files from the repository root, not the scanner's own checkout. Because this setup uses an IAM user instead of GitHub OIDC, the workflow authenticates with that user's long-lived access key stored as GitHub Actions secrets. This is less secure than OIDC: use a dedicated least-privilege user, protect access to the repository and its Actions settings, rotate the key, and never put it in variables, source files, workflow output, or the image.
 
-### Architecture and deployment flow
-
-The target design has one shared ECR repository and ECS cluster, with separate dev, QA, and prod services, task definitions, target groups, EFS access points, and data. A single CloudFront hostname can expose the environments under `/dev/`, `/qa/`, and `/prod/`. The AWS resources and listener rules are being configured manually; verify each actual setting in AWS before enabling ECS deployment.
-
-```mermaid
-flowchart LR
-  Repo[("GitHub repository")]
-  Dev["Developer dispatches workflow<br/>selects environment and deploy option"]
-  Gates["EarlyBird secret scan<br/>Trivy filesystem scan<br/>Maven tests and 60% JaCoCo gate"]
-  Sonar["SonarCloud Automatic Analysis<br/>independent; not a workflow gate"]
-  Build["Docker build"]
-  ImageScan["Trivy image scan"]
-  ECR[("Private ECR<br/>commit-tagged image")]
-  Deploy{"deploy_to_ecs enabled?"}
-  ECS["Selected ECS service<br/>dev / QA / prod"]
-  Secrets[("AWS Secrets Manager")]
-  Data[("EFS environment access point<br/>SQLite and uploads")]
-  Browser["Browser over HTTPS"]
-  CF["CloudFront"]
-  ALB["ALB HTTP origin<br/>custom header rules"]
-  TG["Matching target group"]
-  App["Spring Boot container<br/>port 8080"]
-
-  Repo --> Dev --> Gates --> Build --> ImageScan --> ECR --> Deploy
-  Repo -. "analyzed independently" .-> Sonar
-  Deploy -->|yes| ECS
-  Deploy -->|no: build-only| Summary["Workflow summary"]
-  ECS --> App
-  Secrets -. "task execution role retrieves secret at startup" .-> App
-  App <--> Data
-  Browser -->|HTTPS| CF -->|HTTP origin| ALB --> TG --> App
-```
-
-The diagram shows the intended end state, not a claim that every AWS resource is already complete. The current workflow supports the checks and build/push path; ECS deployment stays off by default. Enable it only once the selected task definition, service, network, EFS mount, secret references, and least-privilege IAM permissions are verified.
-
-### Security controls and limitations
-
-- **Secrets:** Administrator credentials belong in Secrets Manager and are injected by ECS at task start. The task execution role should read only the required secret; the app task role should not have that permission. Secret values must not be in Git, GitHub variables, Docker build arguments, image layers, or logs. The app BCrypt-hashes the initial admin password in SQLite; updating the secret does not rotate an already-created account.
-- **CI credentials:** The current GitHub Actions setup uses a dedicated IAM user's long-lived access key as GitHub Actions secrets. This is a compromise because OIDC role assumption was not available in the account. Scope permissions narrowly, restrict workflow and secret administration, never use root keys, and rotate or revoke the key. GitHub OIDC with short-lived role credentials is the preferred design when available.
-- **Build gates:** EarlyBird scans tracked application files. Trivy blocks high/critical filesystem and image findings (unfixed vulnerabilities are ignored). Maven tests and JaCoCo enforce the configured 60% line coverage. SonarCloud Automatic Analysis runs independently; it does not block this workflow's ECR push or ECS deployment.
-- **Container:** The Docker image runs as a non-root user. Compose additionally uses a read-only root filesystem, drops Linux capabilities, disables privilege escalation, limits resources, and binds locally. Match these controls in ECS where supported.
-- **Network and TLS:** The planned no-domain access path encrypts browser-to-CloudFront traffic with HTTPS, but CloudFront-to-ALB is HTTP. The CloudFront origin-facing prefix list permits traffic from CloudFront generally, not only this distribution; the ALB should also require the per-environment private origin header and use a fixed-response default rule. This is demo-grade, not end-to-end TLS. Do not send sensitive production data or credentials through it. For production, use a domain and TLS from the viewer through to the ALB (or another fully encrypted private origin design).
-- **Persistence and availability:** Separate EFS access points keep environment directories apart, but this application uses SQLite. Run only one active task per environment and do not scale out against the same database. EFS-backed SQLite is a constrained demo design; use a managed database such as PostgreSQL for production or multiple replicas.
+For the deployment flow, architecture diagram, and security controls/limitations, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ### 1. Store the administrator credentials in AWS Secrets Manager
 
