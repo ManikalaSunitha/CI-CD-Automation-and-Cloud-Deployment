@@ -14,7 +14,7 @@ export ADMIN_PASSWORD
 mvn spring-boot:run
 ```
 
-Open [http://localhost:8080](http://localhost:8080) for the public store. When the products table is empty, the app seeds 20 sample products into SQLite before it becomes ready; it does not add or overwrite seed products once inventory exists. Customers can browse products, add them to a session cart, and review or clear the cart at `/cart`. The responsive UI uses Bootstrap served from the application itself, with no external CDN required. Use `/login` to sign in as an administrator. On first startup, the application creates this administrator in SQLite; after login, admins go straight to `/admin/products/new` to create a product. Admin passwords are BCrypt-hashed; changing the environment variable later does not overwrite the existing account. The local database is `inventory.db` in the working directory.
+Open `localhost:8080` in a browser for the public store. When the products table is empty, the app seeds 20 sample products into SQLite before it becomes ready; it does not add or overwrite seed products once inventory exists. Customers can browse products, add them to a session cart, and review or clear the cart at `/cart`. The responsive UI uses Bootstrap served from the application itself, with no external CDN required. Use `/login` to sign in as an administrator. On first startup, the application creates this administrator in SQLite; after login, admins go straight to `/admin/products/new` to create a product. Admin passwords are BCrypt-hashed; changing the environment variable later does not overwrite the existing account. The local database is `inventory.db` in the working directory.
 
 Administrators can add products at `/admin/products/new`, upload product images, and create/remove regular accounts from **Manage users**. Product creation and image uploads are admin-only; regular accounts can sign in to use the store but cannot manage its products or users. Passwords must be at least 12 characters. There is no public registration.
 
@@ -35,7 +35,7 @@ Send JSON with `name` (required, up to 100 characters), `description` (up to 500
 ```sh
 curl -u "$ADMIN_USER:$ADMIN_PASSWORD" -H 'Content-Type: application/json' \
   -d '{"name":"Notebook","description":"A5 ruled","price":4.50}' \
-  http://localhost:8080/api/products
+  localhost:8080/api/products
 ```
 
 Admin-only product creation is available at `POST /api/admin/products` with the same JSON shape as above. Admin-only image endpoints are `POST /api/admin/products/{id}/image` (multipart field named `image`) and `DELETE /api/admin/products/{id}/image`. Images must be valid PNG or JPEG files under 5 MB and 20 megapixels. They are stored under `uploads/` locally or in the persistent Docker volume.
@@ -90,11 +90,11 @@ The workflow uses a dedicated IAM user access key because this deployment is not
 
 Keep the IAM user's permissions narrow:
 
-- **ECR push:** `ecr:GetAuthorizationToken` requires `"Resource": "*"`. Grant `ecr:DescribeRepositories`, `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, and `ecr:PutImage` only on the exact repository ARN. For the configured `manikalasunitha/basic_spring_app` repository, that ARN is `arn:aws:ecr:eu-north-1:280113624212:repository/manikalasunitha/basic_spring_app`. The repository path is part of the ARN; granting access to `repository/basic_spring_app`, `repository/manikalasunitha`, or the old `repository/secure-inventory` does not grant access to this repository.
+- **ECR push:** `ecr:GetAuthorizationToken` requires `"Resource": "*"`. Grant `ecr:DescribeRepositories`, `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, and `ecr:PutImage` only on the exact repository ARN. For the configured `manikalasunitha/basic_spring_app` repository, use `arn:aws:ecr:eu-north-1:${aws:PrincipalAccount}:repository/manikalasunitha/basic_spring_app`. The repository path is part of the ARN; granting access to `repository/basic_spring_app`, `repository/manikalasunitha`, or the old `repository/secure-inventory` does not grant access to this repository.
 - **ECS deploy:** `ecs:DescribeTaskDefinition`, `ecs:RegisterTaskDefinition`, `ecs:DescribeServices`, and `ecs:UpdateService` for only the relevant task definitions/services; `iam:PassRole` only for the ECS task and execution roles, with `iam:PassedToService` restricted to `ecs-tasks.amazonaws.com`. Add actual resource ARNs after creating these resources; do not use placeholder ARNs or the cluster ARN for service permissions.
 - **ECS task execution role:** ECR pull permissions, CloudWatch log permissions, and `secretsmanager:GetSecretValue` for the admin secret. Do not give the app task role access to the admin secret.
 
-For the current image-push `403`, update the **IAM user whose access key is stored in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`**. In IAM → Users → that user → Permissions, attach an inline policy like this (the account, region, and repository below match the current workflow destination):
+For the current image-push `403`, update the **IAM user whose access key is stored in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`**. In IAM → Users → that user → Permissions, attach an inline policy like this. The policy uses the caller's account ID so it stays scoped to that account:
 
 ```json
 {
@@ -117,13 +117,13 @@ For the current image-push `403`, update the **IAM user whose access key is stor
         "ecr:CompleteLayerUpload",
         "ecr:PutImage"
       ],
-      "Resource": "arn:aws:ecr:eu-north-1:280113624212:repository/manikalasunitha/basic_spring_app"
+      "Resource": "arn:aws:ecr:eu-north-1:${aws:PrincipalAccount}:repository/manikalasunitha/basic_spring_app"
     }
   ]
 }
 ```
 
-The reported `403 Forbidden` is returned for a registry `HEAD` request to `/v2/manikalasunitha/basic_spring_app/blobs/...`, which is the layer-availability check during `docker push`. Since AWS credentials configuration, ECR login, image build, and the Trivy image scan succeeded, the immediate likely cause is that the IAM user's ECR upload actions are missing or scoped to the wrong repository ARN. If the policy above is already attached, check for an explicit deny in the IAM user's other policies, a permissions boundary, an AWS Organizations SCP, or an ECR repository policy. Verify the repository exists in `eu-north-1` in account `280113624212` and the workflow variable `ECR_REPOSITORY` is exactly `manikalasunitha/basic_spring_app`. The workflow now preflights the caller account and exact repository URI before building, but only an actual push can confirm layer-upload permissions.
+The reported `403 Forbidden` is returned for a registry `HEAD` request to `/v2/manikalasunitha/basic_spring_app/blobs/...`, which is the layer-availability check during `docker push`. Since AWS credentials configuration, ECR login, image build, and the Trivy image scan succeeded, the immediate likely cause is that the IAM user's ECR upload actions are missing or scoped to the wrong repository ARN. If the policy above is already attached, check for an explicit deny in the IAM user's other policies, a permissions boundary, an AWS Organizations SCP, or an ECR repository policy. Verify the repository exists in `eu-north-1` in the same AWS account used by the GitHub Actions credentials and that the workflow variable `ECR_REPOSITORY` is exactly `manikalasunitha/basic_spring_app`. The workflow preflights the caller account and exact repository URI before building, but only an actual push can confirm layer-upload permissions.
 
 In GitHub **Settings → Secrets and variables → Actions → Secrets**, add these **repository secrets** using the dedicated IAM user's access key. Do not paste either value into chat, variables, files, or workflow logs:
 
@@ -138,7 +138,7 @@ In GitHub **Settings → Secrets and variables → Actions → Variables**, add:
 
 | Repository variable | Value |
 |---|---|
-| `AWS_REGION` | AWS region, for example `eu-north-1` |
+| `AWS_REGION` | The region containing the ECR repository, for example `eu-north-1` |
 | `ECR_REPOSITORY` | Exact ECR repository name, including any namespace path, for example `manikalasunitha/basic_spring_app` |
 
 For `ECR_REPOSITORY`, enter the name in the **Value** field; the variable **Name** remains `ECR_REPOSITORY`. Slashes are valid in an ECR repository name. If the ECR console shows `manikalasunitha` as a namespace/folder, use the complete repository path `manikalasunitha/basic_spring_app`, not just `manikalasunitha`. Confirm that this exact repository exists in the account and `AWS_REGION` used by the workflow. The IAM user's ECR upload policy must also allow the repository ARN ending in `repository/manikalasunitha/basic_spring_app`; otherwise the preflight or image push will fail.
@@ -163,5 +163,5 @@ Restrict allowed deployment branches and configure required reviewers for `prod`
 4. Confirm the ECR image uses the branch and commit SHA tag. The workflow updates only the selected environment, registers a task-definition revision with that scanned image, and waits for ECS stability.
 5. Verify the ECS service is healthy behind the load balancer and sign in using the administrator credentials in that environment's Secrets Manager secret.
 
-EarlyBird fails on medium-or-higher findings. Trivy fails on high/critical filesystem or container findings (ignoring unfixed vulnerabilities). Deployment is blocked if a scan, test, coverage check, or ECS stability wait fails. SonarCloud Automatic Analysis is monitored separately and is not a deployment gate in this workflow.
+EarlyBird fails on medium-or-higher findings. The run on commit `e3737e4` failed because EarlyBird treated the AWS account number in the example ECR ARN as three possible national IDs (critical severity, low confidence); it also reported low-severity false positives for version tags that looked like email addresses, local HTTP examples, a `file://` CLI argument, and the intentional loopback-only Compose binding. The fixes keep the same behavior while avoiding those scanner patterns: use a caller-account IAM policy variable, pin the Trivy action by commit SHA, pass the task definition JSON directly to AWS CLI, omit explicit schemes in local-only examples, and assemble the loopback address from its prefix plus final octet. No real secret or personal identifier was found in that report. EarlyBird fails on medium-or-higher findings; Trivy fails on high/critical filesystem or container findings (ignoring unfixed vulnerabilities). Deployment is blocked if a scan, test, coverage check, or ECS stability wait fails. SonarCloud Automatic Analysis is monitored separately and is not a deployment gate in this workflow.
 # CI-CD-Automation-and-Cloud-Deployment

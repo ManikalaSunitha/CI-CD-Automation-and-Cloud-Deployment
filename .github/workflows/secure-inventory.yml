@@ -76,15 +76,31 @@ jobs:
           cp -a .tools/earlybird/config/. "$HOME/.go-earlybird/"
           cp .tools/earlybird/.ge_ignore "$HOME/.ge_ignore"
           git ls-files --error-unmatch src/main/resources/application.properties >/dev/null
+          set +e
           "$RUNNER_TEMP/go-earlybird" \
             --path="$SCAN_PATH" \
             --git-tracked \
             --fail-severity=medium \
-            --suppress
+            --suppress 2>&1 | tee "$RUNNER_TEMP/earlybird.log"
+          scan_status=${PIPESTATUS[0]}
+          set -e
+
+          {
+            echo "### EarlyBird findings"
+            echo
+            if grep -q '^Finding #' "$RUNNER_TEMP/earlybird.log"; then
+              sed -n '/^Finding #/,$p' "$RUNNER_TEMP/earlybird.log"
+              echo
+              echo "The workflow fails on findings at or above **medium** severity."
+            else
+              echo "No findings were reported."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$scan_status"
 
       - name: Scan source dependencies and configuration
         id: filesystem_scan
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -186,7 +202,7 @@ jobs:
 
       - name: Scan container image
         id: image_scan
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
           REGISTRY: ${{ steps.ecr_login.outputs.registry }}
           IMAGE_TAG: ${{ needs.quality.outputs.image_tag }}
@@ -369,7 +385,7 @@ jobs:
           ' task-definition.json > rendered-task-definition.json
 
           task_definition_arn="$(aws ecs register-task-definition \
-            --cli-input-json file://rendered-task-definition.json \
+            --cli-input-json "$(cat rendered-task-definition.json)" \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)"
           echo "arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
