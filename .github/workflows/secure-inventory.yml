@@ -1,4 +1,5 @@
 name: Secure Inventory CI and ECS Deployment
+run-name: 'Secure Inventory / ${{ inputs.target_environment }} / deploy ECS: ${{ inputs.deploy_to_ecs }}'
 
 on:
   workflow_dispatch:
@@ -27,11 +28,15 @@ concurrency:
 
 jobs:
   quality:
-    name: Secret, dependency, test, coverage, and SonarQube gates
+    name: Quality gates (${{ inputs.target_environment }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
       image_tag: ${{ steps.meta.outputs.tag }}
+      earlybird_result: ${{ steps.earlybird.outcome }}
+      filesystem_scan_result: ${{ steps.filesystem_scan.outcome }}
+      tests_coverage_result: ${{ steps.tests_coverage.outcome }}
+      sonar_result: ${{ steps.sonar.outcome }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -62,6 +67,7 @@ jobs:
           persist-credentials: false
 
       - name: EarlyBird secret and sensitive-data scan
+        id: earlybird
         env:
           SCAN_PATH: ${{ github.workspace }}
         run: |
@@ -78,6 +84,7 @@ jobs:
             --suppress
 
       - name: Scan source dependencies and configuration
+        id: filesystem_scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
@@ -97,9 +104,11 @@ jobs:
           cache-dependency-path: pom.xml
 
       - name: Run tests and enforce 60% minimum line coverage
+        id: tests_coverage
         run: mvn --batch-mode --no-transfer-progress verify
 
       - name: SonarQube analysis and quality gate
+        id: sonar
         uses: SonarSource/sonarqube-scan-action@v7.1.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -115,7 +124,7 @@ jobs:
             -Dsonar.qualitygate.wait=true
 
   build-scan-push:
-    name: Build, scan, and push to private ECR
+    name: Build, scan, and push (${{ inputs.target_environment }})
     needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -126,6 +135,10 @@ jobs:
       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
     outputs:
       image_uri: ${{ steps.image.outputs.uri }}
+      ecr_login_result: ${{ steps.ecr_login.outcome }}
+      image_build_result: ${{ steps.image_build.outcome }}
+      image_scan_result: ${{ steps.image_scan.outcome }}
+      ecr_push_result: ${{ steps.image.outcome }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -140,22 +153,24 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Log in to Amazon ECR
-        id: ecr
+        id: ecr_login
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build image
+        id: image_build
         env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REGISTRY: ${{ steps.ecr_login.outputs.registry }}
           IMAGE_TAG: ${{ needs.quality.outputs.image_tag }}
         run: docker build --tag "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" .
 
       - name: Scan container image
+        id: image_scan
         uses: aquasecurity/trivy-action@v0.36.0
         env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REGISTRY: ${{ steps.ecr_login.outputs.registry }}
           IMAGE_TAG: ${{ needs.quality.outputs.image_tag }}
         with:
-          image-ref: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ needs.quality.outputs.image_tag }}
+          image-ref: ${{ steps.ecr_login.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ needs.quality.outputs.image_tag }}
           format: table
           exit-code: '1'
           ignore-unfixed: true
@@ -164,7 +179,7 @@ jobs:
       - name: Push image after all scans pass
         id: image
         env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REGISTRY: ${{ steps.ecr_login.outputs.registry }}
           IMAGE_TAG: ${{ needs.quality.outputs.image_tag }}
         run: |
           set -euo pipefail
@@ -173,7 +188,7 @@ jobs:
           echo "uri=$image_uri" >> "$GITHUB_OUTPUT"
 
   deploy-ecs:
-    name: Deploy to ECS
+    name: Deploy ${{ inputs.target_environment }} to ECS
     if: ${{ inputs.deploy_to_ecs }}
     needs: build-scan-push
     runs-on: ubuntu-latest
@@ -265,3 +280,60 @@ jobs:
             --task-definition "${{ steps.task-def.outputs.arn }}" \
             --no-cli-pager
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+  summary:
+    name: Run summary (${{ inputs.target_environment }})
+    if: ${{ always() }}
+    needs:
+      - quality
+      - build-scan-push
+      - deploy-ecs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+      DEPLOY_ENABLED: ${{ inputs.deploy_to_ecs }}
+      QUALITY_RESULT: ${{ needs.quality.result }}
+      BUILD_RESULT: ${{ needs.build-scan-push.result }}
+      DEPLOY_RESULT: ${{ needs.deploy-ecs.result }}
+      IMAGE_URI: ${{ needs.build-scan-push.outputs.image_uri }}
+      IMAGE_TAG: ${{ needs.quality.outputs.image_tag }}
+      EARLYBIRD_RESULT: ${{ needs.quality.outputs.earlybird_result }}
+      FILESYSTEM_SCAN_RESULT: ${{ needs.quality.outputs.filesystem_scan_result }}
+      TESTS_COVERAGE_RESULT: ${{ needs.quality.outputs.tests_coverage_result }}
+      SONAR_RESULT: ${{ needs.quality.outputs.sonar_result }}
+      ECR_LOGIN_RESULT: ${{ needs.build-scan-push.outputs.ecr_login_result }}
+      IMAGE_BUILD_RESULT: ${{ needs.build-scan-push.outputs.image_build_result }}
+      IMAGE_SCAN_RESULT: ${{ needs.build-scan-push.outputs.image_scan_result }}
+      ECR_PUSH_RESULT: ${{ needs.build-scan-push.outputs.ecr_push_result }}
+    steps:
+      - name: Publish workflow summary
+        shell: bash
+        run: |
+          {
+            echo "# Secure Inventory — ${TARGET_ENVIRONMENT}"
+            echo
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| EarlyBird secret scan | ${EARLYBIRD_RESULT:-${QUALITY_RESULT}} |"
+            echo "| Trivy filesystem/dependency/configuration scan | ${FILESYSTEM_SCAN_RESULT:-${QUALITY_RESULT}} |"
+            echo "| Maven tests and JaCoCo coverage gate | ${TESTS_COVERAGE_RESULT:-${QUALITY_RESULT}} |"
+            echo "| SonarQube analysis and quality gate | ${SONAR_RESULT:-${QUALITY_RESULT}} |"
+            echo "| ECR login | ${ECR_LOGIN_RESULT:-${BUILD_RESULT}} |"
+            echo "| Docker image build | ${IMAGE_BUILD_RESULT:-${BUILD_RESULT}} |"
+            echo "| Trivy container image scan | ${IMAGE_SCAN_RESULT:-${BUILD_RESULT}} |"
+            echo "| ECR image push | ${ECR_PUSH_RESULT:-${BUILD_RESULT}} |"
+            if [ "$DEPLOY_ENABLED" = "true" ]; then
+              echo "| ECS deployment | ${DEPLOY_RESULT} |"
+            else
+              echo "| ECS deployment | Skipped (build-only run) |"
+            fi
+            echo
+            if [ -n "$IMAGE_TAG" ]; then
+              echo "- Image tag: \`${IMAGE_TAG}\`"
+            fi
+            if [ -n "$IMAGE_URI" ]; then
+              echo "- Image URI: \`${IMAGE_URI}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
