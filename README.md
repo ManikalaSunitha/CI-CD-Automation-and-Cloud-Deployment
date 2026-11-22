@@ -54,56 +54,105 @@ For remote access, terminate TLS at a trusted reverse proxy or load balancer and
 
 ## AWS ECS and CI/CD
 
-The single repository workflow is [`../.github/workflows/secure-inventory.yml`](../.github/workflows/secure-inventory.yml). It runs EarlyBird, Trivy filesystem checks, Maven tests, a JaCoCo line-coverage gate, SonarQube Cloud's quality gate, an ECR image scan, then pushes to private Amazon ECR and updates ECS. Each stage depends on the preceding gates, so a failed scan, test, coverage check, or SonarQube gate prevents image publication and deployment. The minimum JaCoCo line coverage is **60%** and is configured in `pom.xml`.
+The workflow is [`./.github/workflows/secure-inventory.yml`](./.github/workflows/secure-inventory.yml). It runs secret and dependency/configuration scans, Maven tests, a JaCoCo line-coverage gate, SonarQube analysis and quality-gate check, then builds and scans a Docker image, pushes it to private ECR, and updates one ECS service. All quality gates must pass before publishing or deploying. JaCoCo enforces at least **60% line coverage**.
 
-The 20 bundled product photos are downloaded from [Unsplash](https://unsplash.com/license), cropped to 800×800 JPEGs, and packaged under `src/main/resources/product-images/`. On an empty database, startup seeds 20 products and copies the corresponding photos to the configured uploads directory. On existing databases, it adds photos only to matching sample products that do not already have one; custom products and existing images are left unchanged. Images are served by the app and persist with SQLite when the uploads directory is on persistent storage.
+The workflow currently runs only when manually dispatched. Its input selects one of `dev`, `qa`, or `prod`. Because this setup uses an IAM user instead of GitHub OIDC, the workflow authenticates with that user's long-lived access key stored as GitHub Actions secrets. This is less secure than OIDC: use a dedicated least-privilege user, protect access to the repository and its Actions settings, rotate the key, and never put it in variables, source files, workflow output, or the image.
 
-### 1. Configure ECS and persistent storage
+### 1. Store the administrator credentials in AWS Secrets Manager
 
-Create a private ECR repository and an ECS cluster/service (Fargate is supported). Configure the service with:
+Create one secret in **AWS Secrets Manager** for each environment, for example `secure-inventory/dev/admin`. Use a JSON secret with these exact keys:
 
-- One ECS service per GitHub environment (`dev`, `qa`, and `prod`), each configured with `desiredCount=1`; the workflow checks this before deployment and refuses services configured with another count. Set `minimumHealthyPercent=0` and `maximumPercent=100` to avoid concurrent writers to SQLite during rolling deployments.
-- A task definition container named to match `ECS_CONTAINER_NAME`, listening on port `8080`, with `DATABASE_URL=jdbc:sqlite:/data/inventory.db` and `UPLOADS_DIRECTORY=/data/uploads`.
-- An encrypted EFS volume mounted at `/data`, using an access point with UID/GID `10001`. SQLite requires a single active application writer; do not scale this service to multiple tasks. Use PostgreSQL if you need multiple replicas.
-- A load balancer health check on `/`, TLS at the load balancer, private task subnets, and the ECS deployment circuit breaker with rollback enabled.
-- The task definition's `secrets` entries for `ADMIN_USER` and `ADMIN_PASSWORD`, sourced from the environment's SSM `SecureString` parameters. Grant the ECS **task execution role** `ssm:GetParameters` for only those parameter ARNs (and `kms:Decrypt` only if you use a customer-managed KMS key).
-- Task execution role permissions to pull from the private ECR repository and send logs to CloudWatch.
+```json
+{
+  "ADMIN_USER": "your-admin-username",
+  "ADMIN_PASSWORD": "use-a-unique-password-of-at-least-12-characters"
+}
+```
 
-Create two SSM parameters per environment (`dev`, `qa`, `prod`): `/secure-inventory/<environment>/ADMIN_USER` and `/secure-inventory/<environment>/ADMIN_PASSWORD`. Use **SecureString** and enter the password directly in the AWS Console. The first successful app startup stores a BCrypt hash in SQLite; changing the SSM parameter later does not rotate an existing admin password.
+For compatibility with an existing secret that uses `ADMIN_USERNAME`, the app also accepts that environment variable as a fallback. `ADMIN_USER` takes precedence if both are set. In the ECS task definition, map the secret's `ADMIN_USERNAME` JSON key to the container environment variable `ADMIN_USERNAME`, and map `ADMIN_PASSWORD` to `ADMIN_PASSWORD`.
 
-### 2. Configure GitHub OIDC and workflow variables
+Create separate secrets for `qa` and `prod`, use strong unique passwords, and do not put real values in this example or in Git. Attach the secret to the ECS task definition as two container secrets:
 
-Configure an AWS IAM OIDC provider for `token.actions.githubusercontent.com`. Create least-privilege IAM roles trusted only for this GitHub repository and the required branch/environment subjects; do not store long-lived AWS access keys in GitHub. Use separate roles for ECR publishing and ECS deployment:
+```json
+{
+  "secrets": [
+    {
+      "name": "ADMIN_USER",
+      "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:secure-inventory/dev/admin:ADMIN_USER::"
+    },
+    {
+      "name": "ADMIN_PASSWORD",
+      "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:secure-inventory/dev/admin:ADMIN_PASSWORD::"
+    }
+  ]
+}
+```
 
-- The ECR role needs `ecr:GetAuthorizationToken` and image upload actions limited to the target repository.
-- Each ECS deployment role needs `ecs:DescribeTaskDefinition`, `ecs:RegisterTaskDefinition`, `ecs:UpdateService`, and `ecs:DescribeServices` for its environment, plus `iam:PassRole` only for that cluster's task and execution roles.
+Replace `REGION` and `ACCOUNT_ID` with your values and use the matching secret ARN for each environment. JSON-key selection requires Linux Fargate platform version **1.4.0 or later** (or a compatible ECS-on-EC2 agent). Grant `secretsmanager:GetSecretValue` on only these secret ARNs to the **task execution role**; also grant `kms:Decrypt` for the key if the secret uses a customer-managed KMS key. The application receives `ADMIN_USER` and `ADMIN_PASSWORD` at startup and hashes the initial password with BCrypt in SQLite. Changing the secret later does **not** change an already-created admin account's password; rotate it through the app/admin process or an explicit database migration.
 
-Add these **repository variables** under **Settings → Secrets and variables → Actions → Variables**:
+### 2. Create the AWS runtime resources
 
-| Variable | Example |
+In the same AWS region, create a private ECR repository (for example `secure-inventory`), an ECS cluster, and one ECS service per environment. Fargate is supported. For each task definition:
+
+- Set the container name to the value you will configure as `ECS_CONTAINER_NAME`, expose TCP port `8080`, and set `DATABASE_URL=jdbc:sqlite:/data/inventory.db` and `UPLOADS_DIRECTORY=/data/uploads`.
+- Attach the `ADMIN_USER` and `ADMIN_PASSWORD` Secrets Manager entries described above. Set an ECS task execution role for image pulls, CloudWatch logs, and secret retrieval; keep the application task role separate and minimal.
+- Mount an encrypted EFS volume at `/data`, preferably through an EFS access point configured for UID/GID `10001` (the container's non-root user). Allow NFS TCP `2049` from the task security group to the EFS mount targets.
+- Use private task subnets, a load balancer with a health check on `/`, HTTPS/TLS at the load balancer, and the ECS deployment circuit breaker with rollback enabled.
+- Set each service to `desiredCount=1`, `minimumHealthyPercent=0`, and `maximumPercent=100`. This application uses SQLite, so it must have one active writer; do not scale it out or run concurrent tasks against the database. Move to a managed database such as PostgreSQL before using multiple replicas.
+
+Keep the database and uploaded images on persistent storage. The image filesystem is read-only except for writable mounted data and temporary storage. Back up EFS/SQLite regularly.
+
+### 3. Configure GitHub Actions access to AWS
+
+The workflow uses a dedicated IAM user access key because this deployment is not using OIDC. This is a long-lived credential and is less secure than OIDC. Do not use root credentials. The IAM user's current ECR-only policy allows image publishing, but deployment will continue to fail until you add the ECS deployment permissions after creating the services and task definitions.
+
+Keep the IAM user's permissions narrow:
+
+- **ECR push:** `ecr:GetAuthorizationToken` and image upload actions (`BatchCheckLayerAvailability`, `InitiateLayerUpload`, `UploadLayerPart`, `CompleteLayerUpload`, `PutImage`) limited to the `secure-inventory` repository.
+- **ECS deploy:** `ecs:DescribeTaskDefinition`, `ecs:RegisterTaskDefinition`, `ecs:DescribeServices`, and `ecs:UpdateService` for only the relevant task definitions/services; `iam:PassRole` only for the ECS task and execution roles, with `iam:PassedToService` restricted to `ecs-tasks.amazonaws.com`. Add actual resource ARNs after creating these resources; do not use placeholder ARNs or the cluster ARN for service permissions.
+- **ECS task execution role:** ECR pull permissions, CloudWatch log permissions, and `secretsmanager:GetSecretValue` for the admin secret. Do not give the app task role access to the admin secret.
+
+In GitHub **Settings → Secrets and variables → Actions → Secrets**, add these **repository secrets** using the dedicated IAM user's access key. Do not paste either value into chat, variables, files, or workflow logs:
+
+| Repository secret | Value |
 |---|---|
-| `AWS_REGION` | `us-east-1` |
-| `AWS_ECR_ROLE_ARN` | IAM role ARN allowed to publish to ECR |
-| `ECR_REPOSITORY` | `secure-inventory` |
-| `SONAR_PROJECT_KEY` | SonarQube Cloud project key |
-| `SONAR_ORGANIZATION` | SonarQube Cloud organization key |
+| `AWS_ACCESS_KEY_ID` | IAM user's access key ID |
+| `AWS_SECRET_ACCESS_KEY` | Matching secret access key |
 
-Add the **repository secret** `SONAR_TOKEN` for SonarQube Cloud. Create GitHub **environments** named `dev`, `qa`, and `prod`; add these variables to each:
+Protect the repository and Actions settings so only trusted maintainers can change workflows or use these secrets. Restrict who can trigger workflows, require reviewers for `prod`, and rotate/delete the IAM access key when no longer needed. Anyone who can modify a workflow that receives these secrets may be able to use the IAM user's permissions.
 
-| Variable | Value |
+In GitHub **Settings → Secrets and variables → Actions → Variables**, add:
+
+| Repository variable | Value |
 |---|---|
-| `AWS_ECS_ROLE_ARN` | Environment-specific ECS deploy role ARN |
+| `AWS_REGION` | AWS region, for example `eu-north-1` |
+| `ECR_REPOSITORY` | ECR repository name, for example `secure-inventory` |
+| `SONAR_PROJECT_KEY` | Project key from SonarQube |
+| `SONAR_HOST_URL` | SonarQube URL; omit to use `https://sonarcloud.io` |
+| `SONAR_ORGANIZATION` | Required for SonarQube Cloud; omit for self-hosted SonarQube |
+
+Add the **repository secret** `SONAR_TOKEN` using a SonarQube user/project analysis token. The SonarQube server must be reachable by the GitHub-hosted runner; for a private server, use an appropriately network-connected/self-hosted runner or securely expose the server.
+
+In SonarQube, create the project and assign a quality gate to it. Use the exact project key as `SONAR_PROJECT_KEY`; create a token with permission to analyze that project and save it as `SONAR_TOKEN`. For SonarQube Cloud, set `SONAR_ORGANIZATION` and leave `SONAR_HOST_URL` unset (or set it to `https://sonarcloud.io`). For a self-hosted server, set `SONAR_HOST_URL` to its HTTPS URL and leave `SONAR_ORGANIZATION` unset. The workflow imports `target/site/jacoco/jacoco.xml` and waits for the assigned gate; configure the gate's conditions in SonarQube so a failed quality policy blocks deployment.
+
+Create GitHub **environments** named `dev`, `qa`, and `prod`. In each environment, add:
+
+| Environment variable | Value |
+|---|---|
 | `ECS_CLUSTER` | ECS cluster name |
 | `ECS_SERVICE` | ECS service name |
 | `ECS_TASK_DEFINITION` | Existing task-definition family or ARN |
 | `ECS_CONTAINER_NAME` | App container name in that task definition |
 
-In the ECS task definition, configure SSM secret ARNs for the matching environment. Protect the GitHub `prod` environment with required reviewers and restrict its deployment branches.
+Restrict allowed deployment branches and configure required reviewers for `prod`. Keep AWS account IDs, role ARNs, and infrastructure identifiers in variables; store only actual tokens/passwords as secrets.
 
-### 3. Run and understand the workflow
+### 4. Run and verify deployment
 
-- Run **Actions → Secure Inventory CI and ECS Deployment → Run workflow**. GitHub lets you select the source branch, then the workflow input selects exactly one environment (`dev`, `qa`, or `prod`). There are no automatic push deployments.
-- The selected branch runs every quality/security gate before Docker builds the image. Only the successfully scanned image is pushed to private ECR, then the selected environment's ECS service is updated. No other environment is changed.
-- EarlyBird fails on medium-or-higher findings. Trivy fails on HIGH/CRITICAL dependency, secret, configuration, or container findings (ignoring unfixed vulnerabilities). Maven tests and JaCoCo enforce coverage; SonarQube waits for its quality gate.
-- ECS registers a new task-definition revision with the exact scanned ECR image tag, updates the service, and waits for ECS to report the service stable. A failed deployment or stability check fails the workflow.
+1. Confirm ECR, ECS, Secrets Manager, EFS, IAM, GitHub variables/environments, and SonarQube project/token are configured.
+2. Select **Actions → Secure Inventory CI and ECS Deployment → Run workflow**, choose the branch, then choose one target environment.
+3. Confirm secret/dependency scans, `mvn verify`, 60% JaCoCo coverage, and the SonarQube quality gate all pass before image build/push.
+4. Confirm the ECR image uses the branch and commit SHA tag. The workflow updates only the selected environment, registers a task-definition revision with that scanned image, and waits for ECS stability.
+5. Verify the ECS service is healthy behind the load balancer and sign in using the administrator credentials in that environment's Secrets Manager secret.
+
+EarlyBird fails on medium-or-higher findings. Trivy fails on high/critical filesystem or container findings (ignoring unfixed vulnerabilities). Deployment is blocked if a scan, test, coverage check, SonarQube quality gate, or ECS stability wait fails.
 # CI-CD-Automation-and-Cloud-Deployment

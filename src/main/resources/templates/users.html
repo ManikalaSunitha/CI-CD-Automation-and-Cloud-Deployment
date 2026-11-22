@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Manage users | Studio Admin</title>
+    <link href="/webjars/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/css/app.css" rel="stylesheet">
+</head>
+<body>
+<nav class="navbar navbar-dark bg-dark">
+    <div class="container">
+        <a class="navbar-brand" th:href="@{/admin/products}"><span class="brand-mark">S</span> studio <span class="text-white-50 fw-normal">/ Admin</span></a>
+        <a class="btn btn-sm btn-outline-light" th:href="@{/admin/products}">← Products</a>
+    </div>
+</nav>
+<main class="container py-5" style="max-width: 860px">
+    <div class="eyebrow text-primary">Your team</div><h1 class="display-6 fw-bold mb-2">Manage users</h1>
+    <p class="text-secondary mb-4">Give your team access to the shared storefront.</p>
+    <section class="panel p-4 p-md-5 mb-4">
+        <h2 class="h5 fw-bold mb-3">Invite a teammate</h2>
+        <form class="row g-3 align-items-end" th:action="@{/admin/users}" th:object="${newUser}" method="post">
+            <div class="col-md-5">
+                <label class="form-label" for="username">Username</label>
+                <input class="form-control" id="username" th:field="*{username}" required minlength="3" maxlength="50"
+                       pattern="[A-Za-z0-9._-]+" autocomplete="username" placeholder="jane.doe">
+                <div class="text-danger small" th:if="${#fields.hasErrors('username')}" th:errors="*{username}"></div>
+            </div>
+            <div class="col-md-5">
+                <label class="form-label" for="password">Temporary password</label>
+                <input class="form-control" id="password" th:field="*{password}" type="password" required minlength="12"
+                       maxlength="72" autocomplete="new-password">
+                <div class="text-danger small" th:if="${#fields.hasErrors('password')}" th:errors="*{password}"></div>
+            </div>
+            <div class="col-md-2"><button class="btn btn-primary w-100" type="submit">Add user</button></div>
+            <div class="col-12 form-text">Use at least 12 characters for the temporary password.</div>
+        </form>
+    </section>
+    <div class="alert alert-success" th:if="${message}" th:text="${message}"></div>
+    <section class="panel p-4">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h2 class="h5 fw-bold mb-0">Accounts</h2><span class="badge text-bg-light" th:text="${#lists.size(users)}">0</span>
+        </div>
+        <div class="list-group list-group-flush">
+            <div class="list-group-item px-0 d-flex justify-content-between align-items-center" th:each="user : ${users}">
+                <div><span class="fw-semibold" th:text="${user.username}">username</span>
+                    <span class="badge rounded-pill ms-2" th:classappend="${user.role == 'ADMIN' ? 'text-bg-primary' : 'text-bg-light'}" th:text="${user.role}">USER</span>
+                </div>
+                <form th:if="${user.role == 'USER'}" th:action="@{/admin/users/{username}/delete(username=${user.username})}" method="post">
+                    <button class="btn btn-outline-danger btn-sm" type="submit">Remove</button>
+                </form>
+            </div>
+        </div>
+    </section>
+</main>
+</body>
+</html>

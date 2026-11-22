@@ -1,0 +1,259 @@
+name: Secure Inventory CI and ECS Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Deploy the selected branch to this single-task ECS environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - qa
+          - prod
+        default: dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: secure-inventory-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Secret, dependency, test, coverage, and SonarQube gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Generate immutable image tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          safe_branch="$(printf '%s' "$GITHUB_REF_NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g' | cut -c1-80)"
+          echo "tag=${safe_branch}-$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go for EarlyBird
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.0'
+          cache: false
+
+      - name: Checkout pinned EarlyBird scanner
+        uses: actions/checkout@v4
+        with:
+          repository: americanexpress/earlybird
+          ref: 573753e6f39a02293d4a250878e66664aefa674a
+          path: .tools/earlybird
+          persist-credentials: false
+
+      - name: EarlyBird secret and sensitive-data scan
+        working-directory: .tools/earlybird
+        env:
+          SCAN_PATH: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.go-earlybird"
+          cp -a config/. "$HOME/.go-earlybird/"
+          cp .ge_ignore "$HOME/.ge_ignore"
+          go run . \
+            --path="$SCAN_PATH" \
+            --git-tracked \
+            --fail-severity=medium \
+            --suppress
+
+      - name: Scan source dependencies and configuration
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: pom.xml
+
+      - name: Run tests and enforce 60% minimum line coverage
+        run: mvn --batch-mode --no-transfer-progress verify
+
+      - name: SonarQube analysis and quality gate
+        uses: SonarSource/sonarqube-scan-action@v7.1.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: .
+          args: >
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            ${{ vars.SONAR_ORGANIZATION && format('-Dsonar.organization={0}', vars.SONAR_ORGANIZATION) || '' }}
+            -Dsonar.host.url=${{ vars.SONAR_HOST_URL || 'https://sonarcloud.io' }}
+            -Dsonar.java.binaries=target/classes
+            -Dsonar.java.test.binaries=target/test-classes
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+            -Dsonar.qualitygate.wait=true
+
+  build-scan-push:
+    name: Build, scan, and push to private ECR
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+    outputs:
+      image_uri: ${{ steps.image.outputs.uri }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials for ECR
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_TAG: ${{ needs.quality.outputs.image_tag }}
+        run: docker build --tag "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" .
+
+      - name: Scan container image
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_TAG: ${{ needs.quality.outputs.image_tag }}
+        with:
+          image-ref: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ needs.quality.outputs.image_tag }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      - name: Push image after all scans pass
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_TAG: ${{ needs.quality.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          image_uri="$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$image_uri"
+          echo "uri=$image_uri" >> "$GITHUB_OUTPUT"
+
+  deploy-ecs:
+    name: Deploy to ECS
+    needs: build-scan-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: ${{ inputs.target_environment }}
+    permissions:
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+      ECS_TASK_DEFINITION: ${{ vars.ECS_TASK_DEFINITION }}
+      ECS_CONTAINER_NAME: ${{ vars.ECS_CONTAINER_NAME }}
+      IMAGE_URI: ${{ needs.build-scan-push.outputs.image_uri }}
+    steps:
+      - name: Configure AWS credentials for ECS deployment
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify the selected ECS service is configured for one task
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ECS_CLUSTER:?Set the ECS_CLUSTER environment variable}"
+          : "${ECS_SERVICE:?Set the ECS_SERVICE environment variable}"
+
+          service_count="$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'length(services[?status == `ACTIVE`])' \
+            --output text)"
+          if [ "$service_count" != "1" ]; then
+            echo "Expected one ACTIVE ECS service named $ECS_SERVICE in cluster $ECS_CLUSTER." >&2
+            exit 1
+          fi
+
+          desired_count="$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].desiredCount' \
+            --output text)"
+          if [ "$desired_count" != "1" ]; then
+            echo "ECS service $ECS_SERVICE must have desiredCount=1 for this SQLite deployment; found $desired_count." >&2
+            exit 1
+          fi
+
+      - name: Register task definition with the scanned image
+        id: task-def
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ECS_TASK_DEFINITION:?Set the ECS_TASK_DEFINITION environment variable}"
+          : "${ECS_CONTAINER_NAME:?Set the ECS_CONTAINER_NAME environment variable}"
+          : "${IMAGE_URI:?The image build job did not publish an image URI}"
+
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_TASK_DEFINITION" \
+            --query taskDefinition \
+            --output json > task-definition.json
+
+          container_count="$(jq --arg name "$ECS_CONTAINER_NAME" '[.containerDefinitions[] | select(.name == $name)] | length' task-definition.json)"
+          if [ "$container_count" -ne 1 ]; then
+            echo "Expected exactly one task-definition container named $ECS_CONTAINER_NAME; found $container_count." >&2
+            exit 1
+          fi
+
+          jq --arg name "$ECS_CONTAINER_NAME" --arg image "$IMAGE_URI" '
+            del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+            | .containerDefinitions |= map(if .name == $name then .image = $image else . end)
+          ' task-definition.json > rendered-task-definition.json
+
+          task_definition_arn="$(aws ecs register-task-definition \
+            --cli-input-json file://rendered-task-definition.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)"
+          echo "arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Update ECS service and wait for stability
+        run: |
+          set -euo pipefail
+          : "${ECS_CLUSTER:?Set the ECS_CLUSTER environment variable}"
+          : "${ECS_SERVICE:?Set the ECS_SERVICE environment variable}"
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "${{ steps.task-def.outputs.arn }}" \
+            --no-cli-pager
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"

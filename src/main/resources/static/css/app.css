@@ -1,0 +1,112 @@
+:root {
+    --store-ink: #182033;
+    --store-muted: #68738a;
+    --store-primary: #6254e8;
+    --store-bg: #f6f7fb;
+}
+
+body {
+    min-height: 100vh;
+    color: var(--store-ink);
+    background:
+        radial-gradient(ellipse at 12% 0%, rgb(98 84 232 / 9%), transparent 32rem),
+        var(--store-bg);
+}
+
+.navbar-brand {
+    letter-spacing: -.04em;
+    font-weight: 800;
+}
+
+.brand-mark {
+    display: inline-grid;
+    width: 2rem;
+    height: 2rem;
+    margin-right: .4rem;
+    place-items: center;
+    border-radius: .7rem;
+    color: white;
+    background: linear-gradient(135deg, #8174ff, #5142d9);
+}
+
+.hero {
+    overflow: hidden;
+    position: relative;
+    color: white;
+    background: linear-gradient(118deg, #252044, #5142a4 68%, #7462d7);
+}
+
+.hero::after {
+    content: "";
+    position: absolute;
+    width: 18rem;
+    height: 18rem;
+    top: -10rem;
+    right: -3rem;
+    border: 1px solid rgb(255 255 255 / 20%);
+    border-radius: 50%;
+    box-shadow: 0 0 0 2rem rgb(255 255 255 / 5%), 0 0 0 4rem rgb(255 255 255 / 4%);
+}
+
+.product-card, .panel, .cart-card, .login-card {
+    border: 1px solid rgb(26 33 58 / 6%);
+    border-radius: 1rem;
+    background: #fff;
+    box-shadow: 0 .75rem 2rem rgb(30 34 68 / 5%);
+}
+
+.product-card {
+    height: 100%;
+    overflow: hidden;
+    transition: transform .18s ease, box-shadow .18s ease;
+}
+
+.product-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 1.1rem 2.2rem rgb(30 34 68 / 11%);
+}
+
+.product-image, .product-placeholder {
+    width: 100%;
+    height: 220px;
+    object-fit: cover;
+    background: linear-gradient(135deg, #ecebff, #f3f5fa);
+}
+
+.product-placeholder {
+    display: grid;
+    place-items: center;
+    color: #858ba0;
+}
+
+.product-price {
+    color: var(--store-primary);
+    font-size: 1.25rem;
+    font-weight: 800;
+}
+
+.btn-primary {
+    --bs-btn-bg: var(--store-primary);
+    --bs-btn-border-color: var(--store-primary);
+    --bs-btn-hover-bg: #5043d2;
+    --bs-btn-hover-border-color: #5043d2;
+    --bs-btn-active-bg: #4438c4;
+}
+
+.eyebrow {
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    font-size: .75rem;
+    font-weight: 700;
+    opacity: .75;
+}
+
+.login-wrap {
+    min-height: 75vh;
+    display: grid;
+    place-items: center;
+}
+
+.login-card {
+    width: min(100%, 440px);
+}
