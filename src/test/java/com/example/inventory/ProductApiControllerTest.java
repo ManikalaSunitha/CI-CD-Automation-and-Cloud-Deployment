@@ -137,11 +137,11 @@ class ProductApiControllerTest {
     @Test
     @WithMockUser
     void regularUserCannotCreateAccounts() throws Exception {
+        String password = UUID.randomUUID().toString();
         mockMvc.perform(post("/api/admin/users")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"username":"new-user","password":"long-enough-password"}
-                                """))
+                        .content(objectMapper.writeValueAsString(
+                                new AdminUserApiController.CreateUserRequest("new-user", password))))
                 .andExpect(status().isForbidden());
     }
 

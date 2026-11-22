@@ -7,8 +7,10 @@ A small Spring Boot product inventory with a Thymeleaf web interface, authentica
 Requires Java 21 and Maven. Set an administrator password of at least 12 characters; the app refuses to start without one.
 
 ```sh
-export ADMIN_USER=admin
-export ADMIN_PASSWORD='choose-a-strong-password-at-least-12-characters'
+export ADMIN_USER=inventory-admin
+read -rsp 'Admin password: ' ADMIN_PASSWORD
+printf '\n'
+export ADMIN_PASSWORD
 mvn spring-boot:run
 ```
 
@@ -38,15 +40,17 @@ curl -u "$ADMIN_USER:$ADMIN_PASSWORD" -H 'Content-Type: application/json' \
 
 Admin-only product creation is available at `POST /api/admin/products` with the same JSON shape as above. Admin-only image endpoints are `POST /api/admin/products/{id}/image` (multipart field named `image`) and `DELETE /api/admin/products/{id}/image`. Images must be valid PNG or JPEG files under 5 MB and 20 megapixels. They are stored under `uploads/` locally or in the persistent Docker volume.
 
-Admin-only user endpoints use `/api/admin/users`: `GET` lists account usernames and roles, `POST` creates a regular account (`{"username":"teammate","password":"at-least-12-characters"}`), and `DELETE /api/admin/users/{username}` removes a regular account. Password hashes are never returned, and administrator accounts cannot be removed through this API.
+Admin-only user endpoints use `/api/admin/users`: `GET` lists account usernames and roles, `POST` creates a regular account (provide a username and a password that meets the app's minimum length requirement), and `DELETE /api/admin/users/{username}` removes a regular account. Password hashes are never returned, and administrator accounts cannot be removed through this API.
 
 ## Docker deployment
 
 The image uses a separate build stage and a slim Java runtime, runs as a non-root user, and does not include credentials. Compose additionally drops Linux capabilities, disables privilege escalation, uses a read-only root filesystem, caps resources, binds the port to localhost, and keeps SQLite data in a named volume.
 
 ```sh
-export ADMIN_USER=admin
-export ADMIN_PASSWORD='choose-a-strong-deployment-password'
+export ADMIN_USER=inventory-admin
+read -rsp 'Admin password: ' ADMIN_PASSWORD
+printf '\n'
+export ADMIN_PASSWORD
 docker compose up --build -d
 ```
 
@@ -60,35 +64,11 @@ The workflow currently runs only when manually dispatched. Its input selects one
 
 ### 1. Store the administrator credentials in AWS Secrets Manager
 
-Create one secret in **AWS Secrets Manager** for each environment, for example `secure-inventory/dev/admin`. Use a JSON secret with these exact keys:
-
-```json
-{
-  "ADMIN_USER": "your-admin-username",
-  "ADMIN_PASSWORD": "use-a-unique-password-of-at-least-12-characters"
-}
-```
+Create one secret in **AWS Secrets Manager** for each environment, for example `secure-inventory/dev/admin`. Give it the keys `ADMIN_USER` and `ADMIN_PASSWORD`; enter the username and a unique password of 12–72 characters directly in the AWS console. Do not put credential examples or real values in Git.
 
 For compatibility with an existing secret that uses `ADMIN_USERNAME`, the app also accepts that environment variable as a fallback. `ADMIN_USER` takes precedence if both are set. In the ECS task definition, map the secret's `ADMIN_USERNAME` JSON key to the container environment variable `ADMIN_USERNAME`, and map `ADMIN_PASSWORD` to `ADMIN_PASSWORD`.
 
-Create separate secrets for `qa` and `prod`, use strong unique passwords, and do not put real values in this example or in Git. Attach the secret to the ECS task definition as two container secrets:
-
-```json
-{
-  "secrets": [
-    {
-      "name": "ADMIN_USER",
-      "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:secure-inventory/dev/admin:ADMIN_USER::"
-    },
-    {
-      "name": "ADMIN_PASSWORD",
-      "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:secure-inventory/dev/admin:ADMIN_PASSWORD::"
-    }
-  ]
-}
-```
-
-Replace `REGION` and `ACCOUNT_ID` with your values and use the matching secret ARN for each environment. JSON-key selection requires Linux Fargate platform version **1.4.0 or later** (or a compatible ECS-on-EC2 agent). Grant `secretsmanager:GetSecretValue` on only these secret ARNs to the **task execution role**; also grant `kms:Decrypt` for the key if the secret uses a customer-managed KMS key. The application receives `ADMIN_USER` and `ADMIN_PASSWORD` at startup and hashes the initial password with BCrypt in SQLite. Changing the secret later does **not** change an already-created admin account's password; rotate it through the app/admin process or an explicit database migration.
+Create separate secrets for `qa` and `prod`, with separate credentials. In each ECS task definition, add container secret references for the `ADMIN_USER` and `ADMIN_PASSWORD` JSON keys, using the matching environment's Secrets Manager ARN. The references contain ARNs and JSON key names only, never the secret values. JSON-key selection requires Linux Fargate platform version **1.4.0 or later** (or a compatible ECS-on-EC2 agent). Grant `secretsmanager:GetSecretValue` on only these secret ARNs to the **task execution role**; also grant `kms:Decrypt` for the key if the secret uses a customer-managed KMS key. The application receives the credentials at startup and hashes the initial password with BCrypt in SQLite. Changing the secret later does **not** change an already-created admin account's password; rotate it through the app/admin process or an explicit database migration.
 
 ### 2. Create the AWS runtime resources
 
