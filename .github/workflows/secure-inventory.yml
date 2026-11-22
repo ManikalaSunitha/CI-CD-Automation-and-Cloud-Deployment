@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       target_environment:
-        description: Deploy the selected branch to this single-task ECS environment
+        description: Select the environment to deploy when ECS deployment is enabled
         required: true
         type: choice
         options:
@@ -12,6 +12,11 @@ on:
           - qa
           - prod
         default: dev
+      deploy_to_ecs:
+        description: Deploy to ECS after the image passes quality gates and is pushed
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -167,6 +172,7 @@ jobs:
 
   deploy-ecs:
     name: Deploy to ECS
+    if: ${{ inputs.deploy_to_ecs }}
     needs: build-scan-push
     runs-on: ubuntu-latest
     timeout-minutes: 25
