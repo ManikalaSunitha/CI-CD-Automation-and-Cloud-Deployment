@@ -62,15 +62,16 @@ jobs:
           persist-credentials: false
 
       - name: EarlyBird secret and sensitive-data scan
-        working-directory: .tools/earlybird
         env:
           SCAN_PATH: ${{ github.workspace }}
         run: |
           set -euo pipefail
+          go build -C .tools/earlybird -o "$RUNNER_TEMP/go-earlybird" .
           mkdir -p "$HOME/.go-earlybird"
-          cp -a config/. "$HOME/.go-earlybird/"
-          cp .ge_ignore "$HOME/.ge_ignore"
-          go run . \
+          cp -a .tools/earlybird/config/. "$HOME/.go-earlybird/"
+          cp .tools/earlybird/.ge_ignore "$HOME/.ge_ignore"
+          git ls-files --error-unmatch src/main/resources/application.properties >/dev/null
+          "$RUNNER_TEMP/go-earlybird" \
             --path="$SCAN_PATH" \
             --git-tracked \
             --fail-severity=medium \
