@@ -182,7 +182,11 @@ jobs:
             --query 'repositories[0].repositoryUri' \
             --output text 2>ecr-repository-error.txt)"; then
             cat ecr-repository-error.txt >&2
-            echo "::error::ECR repository '$ECR_REPOSITORY' was not found or is not accessible in account $account_id, region $AWS_REGION. Create it there or correct AWS_REGION/ECR_REPOSITORY and the AWS credentials."
+            if grep -q 'AccessDeniedException' ecr-repository-error.txt; then
+              echo "::error::The GitHub Actions IAM user is missing ecr:DescribeRepositories for arn:aws:ecr:${AWS_REGION}:${account_id}:repository/${ECR_REPOSITORY}. Add that action to the user's identity-based policy, scoped to this repository ARN, then rerun."
+            else
+              echo "::error::ECR repository '$ECR_REPOSITORY' was not found in account $account_id, region $AWS_REGION. Create it there or correct AWS_REGION/ECR_REPOSITORY."
+            fi
             exit 1
           fi
 

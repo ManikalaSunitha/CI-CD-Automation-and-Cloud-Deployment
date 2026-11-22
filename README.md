@@ -96,6 +96,8 @@ Keep the IAM user's permissions narrow:
 
 For the current image-push `403`, update the **IAM user whose access key is stored in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`**. In IAM → Users → that user → Permissions, attach an inline policy like this. The policy uses the caller's account ID so it stays scoped to that account:
 
+The latest preflight error identifies the principal as `secure-inventory-deployer` and the missing action as `ecr:DescribeRepositories`. Make sure this action is included in the repository-scoped statement below and that the policy is attached to that exact IAM user (not only the ECS task execution role). Save the policy before rerunning Actions.
+
 ```json
 {
   "Version": "2012-10-17",
