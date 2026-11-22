@@ -4,19 +4,20 @@ Open the editable [AWS deployment diagram](./deployment-architecture.drawio) in 
 
 ## Deployment flow
 
-The target design has one shared ECR repository and ECS cluster, with separate dev, QA, and prod services, task definitions, target groups, EFS access points, and data. A single CloudFront hostname can expose the environments under `/dev/`, `/qa/`, and `/prod/`. The AWS resources and listener rules are being configured manually; verify each actual setting in AWS before enabling ECS deployment.
+The deployment uses one shared ECR repository and ECS cluster, with separate dev and prod services, task definitions, target groups, EFS access points, and data. QA resources may also be part of the target design, but the current workflows automate dev and prod only. A single CloudFront hostname can expose the environments under `/dev/`, `/qa/`, and `/prod/`. The AWS resources and listener rules are being configured manually; verify each actual setting in AWS before enabling production promotion.
 
 ```mermaid
 flowchart LR
   Repo[("GitHub repository")]
-  Dev["Developer dispatches workflow<br/>selects environment and deploy option"]
+  PR["Pull request to main"]
+  Push["Application change pushed to main"]
   Gates["EarlyBird secret scan<br/>Trivy filesystem scan<br/>Maven tests and 60% JaCoCo gate"]
   Sonar["SonarCloud Automatic Analysis<br/>independent; not a workflow gate"]
-  Build["Docker build"]
-  ImageScan["Trivy image scan"]
-  ECR[("Private ECR<br/>commit-tagged image")]
-  Deploy{"deploy_to_ecs enabled?"}
-  ECS["Selected ECS service<br/>dev / QA / prod"]
+  Build["Docker build<br/>Trivy image scan"]
+  ECR[("Private ECR<br/>main-commit image tag")]
+  Dev["Automatic dev ECS deployment"]
+  Promote["Manual prod promotion<br/>approval + digest rescan"]
+  Prod["Production ECS service"]
   Secrets[("AWS Secrets Manager")]
   Data[("EFS environment access point<br/>SQLite and uploads")]
   Browser["Browser over HTTPS"]
@@ -25,17 +26,19 @@ flowchart LR
   TG["Matching target group"]
   App["Spring Boot container<br/>port 8080"]
 
-  Repo --> Dev --> Gates --> Build --> ImageScan --> ECR --> Deploy
+  Repo --> PR --> Gates
+  Repo --> Push --> Gates --> Build --> ECR
   Repo -. "analyzed independently" .-> Sonar
-  Deploy -->|yes| ECS
-  Deploy -->|no: build-only| Summary["Workflow summary"]
-  ECS --> App
+  ECR --> Dev
+  ECR --> Promote --> Prod
+  Dev --> App
+  Prod --> App
   Secrets -. "task execution role retrieves secret at startup" .-> App
   App <--> Data
   Browser -->|HTTPS| CF -->|HTTP origin| ALB --> TG --> App
 ```
 
-The diagram shows the intended end state, not a claim that every AWS resource is already complete. The current workflow supports the checks and build/push path; ECS deployment stays off by default. Enable it only once the selected task definition, service, network, EFS mount, secret references, and least-privilege IAM permissions are verified.
+Pull requests run the quality gates only and do not receive AWS credentials. Merges to `main` build, scan, push a commit-tagged image, and deploy to dev. Production is a separate manual promotion of the selected image tag; the workflow resolves its digest, rescans that digest, and deploys that exact artifact after the `prod` environment's approval rules are satisfied. The diagram shows the intended design, not a claim that every AWS resource is already complete; verify task definitions, services, networks, EFS mounts, secret references, and least-privilege IAM permissions.
 
 ## Trivy image scan failure diagnosis
 

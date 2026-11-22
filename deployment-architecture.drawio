@@ -7,7 +7,7 @@
         <mxCell id="title" value="Secure Inventory — Deployment Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#232F3E;" vertex="1" parent="1">
           <mxGeometry x="30" y="20" width="900" height="40" as="geometry"/>
         </mxCell>
-        <mxCell id="subtitle" value="Target design • eu-north-1 • Manual workflow dispatch • Diagram distinguishes configured resources from pending setup" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=13;fontColor=#475569;" vertex="1" parent="1">
+        <mxCell id="subtitle" value="Target design • eu-north-1 • Auto dev deployment from main • Manual, approved production promotion • Verify pending resources" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=13;fontColor=#475569;" vertex="1" parent="1">
           <mxGeometry x="32" y="60" width="1100" height="28" as="geometry"/>
         </mxCell>
 
@@ -21,7 +21,7 @@
         <mxCell id="repo" value="GitHub repository&#xa;Spring Boot source + workflow&#xa;main branch" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="githubLane">
           <mxGeometry x="25" y="55" width="300" height="75" as="geometry"/>
         </mxCell>
-        <mxCell id="dispatch" value="Manual workflow dispatch&#xa;Select dev / qa / prod&#xa;deploy_to_ecs defaults to false" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#3B82F6;fontSize=12;" vertex="1" parent="githubLane">
+        <mxCell id="dispatch" value="Triggers&#xa;PR to main: quality checks only&#xa;Push to main: auto deploy dev&#xa;Prod: separate manual promotion" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#3B82F6;fontSize=12;" vertex="1" parent="githubLane">
           <mxGeometry x="25" y="160" width="300" height="82" as="geometry"/>
         </mxCell>
         <mxCell id="gates" value="Quality gates (must pass)&#xa;• EarlyBird tracked-source secret scan&#xa;• Trivy filesystem/dependency/config scan&#xa;• Maven tests + JaCoCo ≥ 60% lines" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#10B981;fontSize=12;align=left;spacingLeft=12;" vertex="1" parent="githubLane">
@@ -30,13 +30,13 @@
         <mxCell id="sonar" value="SonarCloud Automatic Analysis&#xa;Independent scan; not an Actions gate" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#F59E0B;fontSize=12;" vertex="1" parent="githubLane">
           <mxGeometry x="25" y="400" width="300" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="buildscan" value="Docker build → Trivy image scan&#xa;High/critical findings block push" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#10B981;fontSize=12;" vertex="1" parent="githubLane">
+        <mxCell id="buildscan" value="Dev: build → Trivy image scan → ECR push&#xa;Prod: pull selected image, rescan digest, then deploy exact digest" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#10B981;fontSize=12;" vertex="1" parent="githubLane">
           <mxGeometry x="25" y="495" width="300" height="78" as="geometry"/>
         </mxCell>
         <mxCell id="githubawscreds" value="GitHub Actions secrets&#xa;Dedicated IAM user's long-lived key&#xa;Less secure than OIDC • rotate/restrict" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F97316;fontSize=11;" vertex="1" parent="githubLane">
           <mxGeometry x="25" y="605" width="300" height="85" as="geometry"/>
         </mxCell>
-        <mxCell id="summary" value="Run summary&#xa;Per-check result + image tag&#xa;ECS status or build-only skipped" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F5F9;strokeColor=#64748B;fontSize=12;" vertex="1" parent="githubLane">
+        <mxCell id="summary" value="End-of-run summaries&#xa;Gate results • tests/coverage • scan findings&#xa;Image tag/digest • ECS deployment result" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F5F9;strokeColor=#64748B;fontSize=12;" vertex="1" parent="githubLane">
           <mxGeometry x="25" y="725" width="300" height="65" as="geometry"/>
         </mxCell>
 
@@ -117,12 +117,12 @@
         </mxCell>
 
         <mxCell id="edgeRepoDispatch" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#64748B;" edge="1" parent="1" source="repo" target="dispatch"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="edgeDispatchGates" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#64748B;" edge="1" parent="1" source="dispatch" target="gates"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeDispatchGates" value="PR checks / main push" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#64748B;fontSize=10;" edge="1" parent="1" source="dispatch" target="gates"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="edgeSonar" value="independent" style="endArrow=open;dashed=1;html=1;strokeColor=#A16207;fontSize=10;" edge="1" parent="1" source="repo" target="sonar"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="edgeGatesBuild" value="" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#64748B;" edge="1" parent="1" source="gates" target="buildscan"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="edgeBuildEcr" value="push immutable commit tag" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#059669;fontSize=10;" edge="1" parent="1" source="buildscan" target="ecrIcon"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeBuildEcr" value="push commit-based tag" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#059669;fontSize=10;" edge="1" parent="1" source="buildscan" target="ecrIcon"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="edgeCreds" value="IAM access key authentication" style="endArrow=open;dashed=1;html=1;strokeColor=#F97316;fontSize=10;" edge="1" parent="1" source="githubawscreds" target="ecrIcon"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="edgeEcrEcs" value="selected image" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#059669;fontSize=10;" edge="1" parent="1" source="ecrIcon" target="ecsIcon"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeEcrEcs" value="auto dev / approved prod image" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#059669;fontSize=10;" edge="1" parent="1" source="ecrIcon" target="ecsIcon"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="edgeAlbCf" value="HTTPS viewer; HTTP origin" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#7C3AED;fontSize=10;" edge="1" parent="network" source="cloudfrontIcon" target="albIcon"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="edgeCfFunc" value="" style="endArrow=open;dashed=1;html=1;strokeColor=#7C3AED;" edge="1" parent="network" source="cloudfrontIcon" target="cfFunction"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="edgeClusterDev" value="" style="endArrow=block;html=1;strokeColor=#3B82F6;" edge="1" parent="network" source="ecsIcon" target="envdev"><mxGeometry relative="1" as="geometry"/></mxCell>

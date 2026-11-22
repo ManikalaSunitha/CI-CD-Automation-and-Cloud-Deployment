@@ -1,23 +1,34 @@
-name: Secure Inventory CI and ECS Deployment
-run-name: 'Secure Inventory / ${{ inputs.target_environment }} / deploy ECS: ${{ inputs.deploy_to_ecs }}'
+name: Secure Inventory Development CI/CD
+run-name: 'Secure Inventory / dev / ${{ github.event_name }}'
 
 on:
-  workflow_dispatch:
-    inputs:
-      target_environment:
-        description: Select the environment to deploy when ECS deployment is enabled
-        required: true
-        type: choice
-        options:
-          - dev
-          - qa
-          - prod
-        default: dev
-      deploy_to_ecs:
-        description: Deploy to ECS after the image passes quality gates and is pushed
-        required: true
-        type: boolean
-        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.mvn/**'
+      - 'mvnw'
+      - 'mvnw.cmd'
+      - 'compose.yaml'
+      - '.github/workflows/secure-inventory.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.mvn/**'
+      - 'mvnw'
+      - 'mvnw.cmd'
+      - 'compose.yaml'
+      - '.github/workflows/secure-inventory.yml'
+      - '.github/workflows/secure-inventory-prod.yml'
 
 permissions:
   contents: read
@@ -28,14 +39,16 @@ concurrency:
 
 jobs:
   quality:
-    name: Quality gates (${{ inputs.target_environment }})
+    name: Quality gates
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
       image_tag: ${{ steps.meta.outputs.tag }}
       earlybird_result: ${{ steps.earlybird.outcome }}
       filesystem_scan_result: ${{ steps.filesystem_scan.outcome }}
+      filesystem_scan_details: ${{ steps.filesystem_scan_summary.outputs.details }}
       tests_coverage_result: ${{ steps.tests_coverage.outcome }}
+      test_metrics: ${{ steps.test_metrics.outputs.details }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -43,7 +56,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Generate immutable image tag
+      - name: Generate commit-based image tag
         id: meta
         shell: bash
         run: |
@@ -109,6 +122,83 @@ jobs:
           skip-dirs: .tools/earlybird
           ignore-unfixed: true
           exit-code: '1'
+          format: json
+          output: trivy-filesystem-results.json
+
+      - name: Summarize filesystem scan findings
+        id: filesystem_scan_summary
+        if: always()
+        env:
+          SCAN_OUTCOME: ${{ steps.filesystem_scan.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from collections import Counter
+          from pathlib import Path
+
+          def markdown(value):
+              return str(value or "—").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+          lines = [
+              "### Trivy source and configuration scan",
+              f"- Result: **{os.environ.get('SCAN_OUTCOME', 'unknown')}**",
+          ]
+          report_path = Path("trivy-filesystem-results.json")
+          if not report_path.is_file():
+              lines.append("- Trivy did not produce a JSON report; inspect the scan step logs.")
+          else:
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+              findings = []
+              for result in report.get("Results") or []:
+                  for category in ("Vulnerabilities", "Misconfigurations", "Secrets"):
+                      for finding in result.get(category) or []:
+                          if finding.get("Severity") in {"CRITICAL", "HIGH"}:
+                              findings.append((result.get("Target", ""), category, finding))
+
+              counts = Counter(finding.get("Severity") for _, _, finding in findings)
+              lines.append(
+                  f"- Blocking findings: **{len(findings)}** "
+                  f"(CRITICAL: {counts.get('CRITICAL', 0)}, HIGH: {counts.get('HIGH', 0)})."
+              )
+              if findings:
+                  lines.extend([
+                      "",
+                      "| Severity | Type | File/target | Finding | Details |",
+                      "|---|---|---|---|---|",
+                  ])
+                  findings.sort(
+                      key=lambda item: (
+                          0 if item[2].get("Severity") == "CRITICAL" else 1,
+                          item[1],
+                          item[2].get("VulnerabilityID", item[2].get("ID", "")),
+                      )
+                  )
+                  for target, category, finding in findings:
+                      lines.append(
+                          "| "
+                          + " | ".join(
+                              markdown(value)
+                              for value in (
+                                  finding.get("Severity"),
+                                  category,
+                                  target,
+                                  finding.get("VulnerabilityID", finding.get("ID", finding.get("PkgName"))),
+                                  finding.get("Title", finding.get("Message")),
+                              )
+                          )
+                          + " |"
+                      )
+              else:
+                  lines.append("- No HIGH or CRITICAL vulnerabilities, misconfigurations, or secrets were reported.")
+
+          details = "\n".join(lines)
+          delimiter = f"TRIVY_FS_DETAILS_{os.getpid()}"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"details<<{delimiter}\n{details}\n{delimiter}\n")
+          PY
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
@@ -122,11 +212,63 @@ jobs:
         id: tests_coverage
         run: mvn --batch-mode --no-transfer-progress verify
 
+      - name: Summarize test and coverage reports
+        id: test_metrics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          lines = ["### Maven test and JaCoCo details"]
+          reports = sorted(Path("target/surefire-reports").glob("TEST-*.xml"))
+          if reports:
+              totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+              for report in reports:
+                  suite = ET.parse(report).getroot()
+                  for key in totals:
+                      totals[key] += int(suite.attrib.get(key, 0))
+              lines.append(
+                  f"- Tests: **{totals['tests']}**; failures: **{totals['failures']}**; "
+                  f"errors: **{totals['errors']}**; skipped: **{totals['skipped']}**."
+              )
+          else:
+              lines.append("- Surefire XML reports are unavailable; inspect the Maven step logs.")
+
+          coverage_report = Path("target/site/jacoco/jacoco.xml")
+          if coverage_report.is_file():
+              root = ET.parse(coverage_report).getroot()
+              line_counter = next(
+                  (counter for counter in root.findall("counter") if counter.attrib.get("type") == "LINE"),
+                  None,
+              )
+              if line_counter is not None:
+                  covered = int(line_counter.attrib.get("covered", 0))
+                  missed = int(line_counter.attrib.get("missed", 0))
+                  total = covered + missed
+                  percent = (covered * 100 / total) if total else 0
+                  lines.append(f"- JaCoCo line coverage: **{percent:.2f}%** ({covered}/{total} lines; gate: 60%).")
+              else:
+                  lines.append("- JaCoCo XML was produced without a line-coverage counter.")
+          else:
+              lines.append("- JaCoCo XML report is unavailable; inspect the Maven step logs.")
+
+          details = "\n".join(lines)
+          delimiter = f"TEST_METRICS_{os.getpid()}"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"details<<{delimiter}\n{details}\n{delimiter}\n")
+          PY
+
   build-scan-push:
-    name: Build, scan, and push (${{ inputs.target_environment }})
+    name: Build, scan, and push dev image
+    if: ${{ github.event_name == 'push' }}
     needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment: dev
     permissions:
       contents: read
     env:
@@ -295,7 +437,6 @@ jobs:
                   lines.append("- No HIGH or CRITICAL vulnerabilities were reported in the image.")
 
           details = "\n".join(lines)
-          print(details)
           delimiter = f"TRIVY_DETAILS_{os.getpid()}"
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"details<<{delimiter}\n{details}\n{delimiter}\n")
@@ -313,14 +454,18 @@ jobs:
           echo "uri=$image_uri" >> "$GITHUB_OUTPUT"
 
   deploy-ecs:
-    name: Deploy ${{ inputs.target_environment }} to ECS
-    if: ${{ inputs.deploy_to_ecs }}
+    name: Deploy dev to ECS
+    if: ${{ needs.build-scan-push.result == 'success' }}
     needs: build-scan-push
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    environment: ${{ inputs.target_environment }}
+    environment: dev
     permissions:
       contents: read
+    outputs:
+      service_check_result: ${{ steps.service_check.outcome }}
+      task_definition_result: ${{ steps.task_def.outcome }}
+      ecs_update_result: ${{ steps.ecs_update.outcome }}
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
@@ -337,6 +482,7 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Verify the selected ECS service is configured for one task
+        id: service_check
         shell: bash
         run: |
           set -euo pipefail
@@ -364,7 +510,7 @@ jobs:
           fi
 
       - name: Register task definition with the scanned image
-        id: task-def
+        id: task_def
         shell: bash
         run: |
           set -euo pipefail
@@ -395,6 +541,7 @@ jobs:
           echo "arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
 
       - name: Update ECS service and wait for stability
+        id: ecs_update
         run: |
           set -euo pipefail
           : "${ECS_CLUSTER:?Set the ECS_CLUSTER environment variable}"
@@ -402,12 +549,12 @@ jobs:
           aws ecs update-service \
             --cluster "$ECS_CLUSTER" \
             --service "$ECS_SERVICE" \
-            --task-definition "${{ steps.task-def.outputs.arn }}" \
+            --task-definition "${{ steps.task_def.outputs.arn }}" \
             --no-cli-pager
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
 
   summary:
-    name: Run summary (${{ inputs.target_environment }})
+    name: Run summary
     if: ${{ always() }}
     needs:
       - quality
@@ -417,8 +564,8 @@ jobs:
     permissions:
       contents: read
     env:
-      TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
-      DEPLOY_ENABLED: ${{ inputs.deploy_to_ecs }}
+      TARGET_ENVIRONMENT: dev
+      DEPLOY_ENABLED: ${{ github.event_name == 'push' }}
       QUALITY_RESULT: ${{ needs.quality.result }}
       BUILD_RESULT: ${{ needs.build-scan-push.result }}
       DEPLOY_RESULT: ${{ needs.deploy-ecs.result }}
@@ -427,47 +574,135 @@ jobs:
       EARLYBIRD_RESULT: ${{ needs.quality.outputs.earlybird_result }}
       FILESYSTEM_SCAN_RESULT: ${{ needs.quality.outputs.filesystem_scan_result }}
       TESTS_COVERAGE_RESULT: ${{ needs.quality.outputs.tests_coverage_result }}
+      TEST_METRICS: ${{ needs.quality.outputs.test_metrics }}
+      FILESYSTEM_SCAN_DETAILS: ${{ needs.quality.outputs.filesystem_scan_details }}
       ECR_LOGIN_RESULT: ${{ needs.build-scan-push.outputs.ecr_login_result }}
       ECR_REPOSITORY_CHECK_RESULT: ${{ needs.build-scan-push.outputs.ecr_repository_check_result }}
       IMAGE_BUILD_RESULT: ${{ needs.build-scan-push.outputs.image_build_result }}
       IMAGE_SCAN_RESULT: ${{ needs.build-scan-push.outputs.image_scan_result }}
       IMAGE_SCAN_DETAILS: ${{ needs.build-scan-push.outputs.image_scan_details }}
       ECR_PUSH_RESULT: ${{ needs.build-scan-push.outputs.ecr_push_result }}
+      SERVICE_CHECK_RESULT: ${{ needs.deploy-ecs.outputs.service_check_result }}
+      TASK_DEFINITION_RESULT: ${{ needs.deploy-ecs.outputs.task_definition_result }}
+      ECS_UPDATE_RESULT: ${{ needs.deploy-ecs.outputs.ecs_update_result }}
+      EVENT_NAME: ${{ github.event_name }}
+      REF_NAME: ${{ github.ref_name }}
+      COMMIT_SHA: ${{ github.sha }}
+      ACTOR: ${{ github.actor }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Publish workflow summary
         shell: bash
         run: |
-          {
-            echo "# Secure Inventory — ${TARGET_ENVIRONMENT}"
-            echo
-            echo "| Check | Result |"
-            echo "|---|---|"
-            echo "| EarlyBird secret scan | ${EARLYBIRD_RESULT:-${QUALITY_RESULT}} |"
-            echo "| Trivy filesystem/dependency/configuration scan | ${FILESYSTEM_SCAN_RESULT:-${QUALITY_RESULT}} |"
-            echo "| Maven tests and JaCoCo coverage gate | ${TESTS_COVERAGE_RESULT:-${QUALITY_RESULT}} |"
-            echo "| SonarCloud Automatic Analysis | Runs independently; check SonarCloud project |"
-            echo "| ECR login | ${ECR_LOGIN_RESULT:-${BUILD_RESULT}} |"
-            echo "| ECR repository preflight | ${ECR_REPOSITORY_CHECK_RESULT:-${BUILD_RESULT}} |"
-            echo "| Docker image build | ${IMAGE_BUILD_RESULT:-${BUILD_RESULT}} |"
-            echo "| Trivy container image scan | ${IMAGE_SCAN_RESULT:-${BUILD_RESULT}} |"
-            echo "| ECR image push | ${ECR_PUSH_RESULT:-${BUILD_RESULT}} |"
-            if [ "$DEPLOY_ENABLED" = "true" ]; then
-              echo "| ECS deployment | ${DEPLOY_RESULT} |"
-            else
-              echo "| ECS deployment | Skipped (build-only run) |"
-            fi
-            echo
-            if [ -n "$IMAGE_TAG" ]; then
-              echo "- Image tag: \`${IMAGE_TAG}\`"
-            fi
-            if [ -n "$IMAGE_URI" ]; then
-              echo "- Image URI: \`${IMAGE_URI}\`"
-            fi
-            echo
-            if [ -n "$IMAGE_SCAN_DETAILS" ]; then
-              printf '%s\n' "$IMAGE_SCAN_DETAILS"
-            else
-              echo "### Trivy image scan details"
-              echo "No detailed scan report was passed to the summary job; inspect the build-and-scan job logs."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          def value(name, fallback="not run"):
+              return os.environ.get(name) or fallback
+
+          def status(name, fallback="not run"):
+              result = value(name, fallback).lower()
+              icon = {
+                  "success": "✅",
+                  "failure": "❌",
+                  "cancelled": "⚪",
+                  "skipped": "⏭️",
+                  "not run": "⏭️",
+              }.get(result, "⚠️")
+              return f"{icon} **{result}**"
+
+          if os.environ.get("QUALITY_RESULT") != "success":
+              overall_result = os.environ.get("QUALITY_RESULT", "failure")
+          elif os.environ.get("DEPLOY_ENABLED") == "true":
+              overall_result = (
+                  os.environ.get("BUILD_RESULT", "failure")
+                  if os.environ.get("BUILD_RESULT") != "success"
+                  else os.environ.get("DEPLOY_RESULT", "failure")
+              )
+          else:
+              overall_result = os.environ.get("QUALITY_RESULT", "unknown")
+
+          lines = [
+              "# Secure Inventory — Development run",
+              "",
+              f"**Overall status:** {status('OVERALL_RESULT', overall_result)}",
+              "",
+              "## Run context",
+              "",
+              "| Field | Value |",
+              "|---|---|",
+              f"| Trigger | `{value('EVENT_NAME')}` |",
+              f"| Ref | `{value('REF_NAME')}` |",
+              f"| Commit | [`{value('COMMIT_SHA')[:12]}`]({value('RUN_URL')}) |",
+              f"| Actor | `{value('ACTOR')}` |",
+              f"| Workflow run | [Open run]({value('RUN_URL')}) |",
+              "",
+              "## Pipeline results",
+              "",
+              "| Stage | Result | Details |",
+              "|---|---|---|",
+              f"| EarlyBird tracked-source secret scan | {status('EARLYBIRD_RESULT', value('QUALITY_RESULT'))} | Findings are listed in the quality job summary. |",
+              f"| Trivy filesystem/dependency/configuration scan | {status('FILESYSTEM_SCAN_RESULT', value('QUALITY_RESULT'))} | See the detailed findings below. |",
+              f"| Maven tests and JaCoCo coverage gate | {status('TESTS_COVERAGE_RESULT', value('QUALITY_RESULT'))} | See test counts and coverage below. |",
+              f"| SonarCloud Automatic Analysis | ℹ️ Independent | Not a deployment gate; review the SonarCloud project separately. |",
+              f"| ECR login | {status('ECR_LOGIN_RESULT', value('BUILD_RESULT'))} | AWS authentication and registry login. |",
+              f"| ECR repository preflight | {status('ECR_REPOSITORY_CHECK_RESULT', value('BUILD_RESULT'))} | Account, region, and repository URI verified. |",
+              f"| Docker image build | {status('IMAGE_BUILD_RESULT', value('BUILD_RESULT'))} | Builds the application container. |",
+              f"| Trivy container image scan | {status('IMAGE_SCAN_RESULT', value('BUILD_RESULT'))} | HIGH/CRITICAL findings block publishing. |",
+              f"| ECR image push | {status('ECR_PUSH_RESULT', value('BUILD_RESULT'))} | Only occurs after the image scan passes. |",
+              f"| ECS dev service check | {status('SERVICE_CHECK_RESULT', value('DEPLOY_RESULT'))} | SQLite deployment requires one active task. |",
+              f"| ECS task-definition registration | {status('TASK_DEFINITION_RESULT', value('DEPLOY_RESULT'))} | Registers the scanned image URI. |",
+              f"| ECS update and stability wait | {status('ECS_UPDATE_RESULT', value('DEPLOY_RESULT'))} | Waits until the service is stable. |",
+              "",
+          ]
+
+          if os.environ.get("DEPLOY_ENABLED") == "true" and os.environ.get("ECR_PUSH_RESULT") == "success":
+              lines.extend(["## Published image", ""])
+              if os.environ.get("IMAGE_TAG"):
+                  lines.append(f"- **Tag:** `{os.environ['IMAGE_TAG']}`")
+              if os.environ.get("IMAGE_URI"):
+                  lines.append(f"- **Image URI:** `{os.environ['IMAGE_URI']}`")
+              if os.environ.get("IMAGE_TAG"):
+                  lines.append("- Use this commit-based tag to request a manual production promotion; the production workflow records and deploys the resolved digest.")
+          elif os.environ.get("DEPLOY_ENABLED") == "true":
+              lines.extend([
+                  "## Image publishing",
+                  "",
+                  "No image was successfully pushed. Do not start a production promotion from this run.",
+              ])
+          else:
+              lines.extend([
+                  "## Deployment",
+                  "",
+                  "This was a pull-request run. AWS publishing and ECS deployment are intentionally skipped.",
+              ])
+
+          for name, heading in (
+              ("TEST_METRICS", "Test and coverage details"),
+              ("FILESYSTEM_SCAN_DETAILS", "Source scan findings"),
+              ("IMAGE_SCAN_DETAILS", "Container scan findings"),
+          ):
+              detail = os.environ.get(name)
+              if detail:
+                  lines.extend(["", detail])
+              elif name == "FILESYSTEM_SCAN_DETAILS":
+                  lines.extend(["", f"### {heading}", "", "Detailed Trivy output is unavailable; inspect the scan job logs."])
+
+          if os.environ.get("QUALITY_RESULT") != "success":
+              lines.extend([
+                  "",
+                  "## Next steps",
+                  "",
+                  "Review the first failed quality gate above and its job logs. Image publishing and ECS deployment run only after all quality gates pass.",
+              ])
+          elif os.environ.get("DEPLOY_ENABLED") == "true" and os.environ.get("DEPLOY_RESULT") != "success":
+              lines.extend([
+                  "",
+                  "## Next steps",
+                  "",
+                  "Quality gates passed. Review the first failed ECR or ECS step, verify the AWS permissions and environment configuration, then rerun the workflow.",
+              ])
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY

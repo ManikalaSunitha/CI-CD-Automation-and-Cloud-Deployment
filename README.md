@@ -58,9 +58,25 @@ For remote access, terminate TLS at a trusted reverse proxy or load balancer and
 
 ## AWS ECS and CI/CD
 
-The workflow is [`./.github/workflows/secure-inventory.yml`](./.github/workflows/secure-inventory.yml). It runs secret and dependency/configuration scans, Maven tests, a JaCoCo line-coverage gate, then builds and scans a Docker image, pushes it to private ECR, and optionally updates one ECS service. SonarCloud Automatic Analysis runs independently on the project; it does not gate this workflow. JaCoCo enforces at least **60% line coverage**.
+The development workflow is [`./.github/workflows/secure-inventory.yml`](./.github/workflows/secure-inventory.yml). Pull requests targeting `main` run the EarlyBird secret scan, Trivy filesystem/dependency/configuration scan, Maven tests, and JaCoCo coverage gate without AWS credentials. A push to `main` that changes application/build files runs those checks, builds and scans the image, pushes it to private ECR, and automatically deploys the passing image to the `dev` ECS service. JaCoCo enforces at least **60% line coverage**.
 
-The workflow currently runs only when manually dispatched. Its input selects one of `dev`, `qa`, or `prod`; `deploy_to_ecs` defaults to false so you can run quality checks, build, scan, and push the image before ECS is ready. The run title and job names include the selected environment, and a final GitHub Actions summary lists each check's result. Enable ECS deployment only after the selected environment's ECS service/task definition and deployment settings are configured. EarlyBird scans the app repository's tracked files from the repository root, not the scanner's own checkout. Because this setup uses an IAM user instead of GitHub OIDC, the workflow authenticates with that user's long-lived access key stored as GitHub Actions secrets. This is less secure than OIDC: use a dedicated least-privilege user, protect access to the repository and its Actions settings, rotate the key, and never put it in variables, source files, workflow output, or the image.
+Production promotion is separate in [`./.github/workflows/secure-inventory-prod.yml`](./.github/workflows/secure-inventory-prod.yml). It is manually dispatched with the commit-based `main-<12-character-commit-sha>` tag shown in the successful development workflow summary. It pulls that image, resolves and scans its digest, then deploys that exact digest to the `prod` ECS service. Configure required reviewers and restrict deployment branches to `main` in the GitHub `prod` environment. Select a SHA-based tag from a successful dev run, not an arbitrary `latest` tag. The workflows do not delete older ECR images; configure an ECR lifecycle policy separately when you are ready to control image retention.
+
+SonarCloud Automatic Analysis runs independently on the project; it does not gate either workflow. EarlyBird scans the app repository's tracked files from the repository root, not the scanner's own checkout. Because this setup currently uses an IAM user instead of GitHub OIDC, AWS authentication uses that user's long-lived access key stored as GitHub Actions secrets. This is less secure than OIDC: use a dedicated least-privilege identity, protect access to the repository and its Actions settings, rotate the key, and never put it in variables, source files, workflow output, or the image.
+
+### Security scan coverage and next improvements
+
+The current deployment gates cover tracked-source secret detection (EarlyBird), Trivy filesystem dependency/secret/misconfiguration scanning, Maven tests plus a 60% JaCoCo line-coverage gate, and Trivy container-image vulnerability scans. Production rescans the selected image by digest before ECS uses that same digest. SonarCloud Automatic Analysis is useful additional code analysis, but it is monitored separately rather than enforced as a deployment gate.
+
+For the next hardening stage, prioritize:
+
+1. **GitHub CodeQL and dependency review** for Java code and pull-request dependency changes.
+2. **Infrastructure-as-code scanning** (for example Trivy config or Checkov) when ECS, IAM, networking, and EFS are managed as Terraform or CloudFormation instead of only manual console setup.
+3. **SBOM generation and image signing/provenance verification** so production can verify what was built and by which workflow before promotion.
+4. **GitHub OIDC** to replace the long-lived AWS access key with short-lived, environment-scoped AWS roles. This is an identity control, not a scan, but is the highest-priority credential improvement.
+5. **Authenticated DAST** against the deployed dev/staging service after the runtime environment is ready; avoid running it against production before safe test accounts, rate limits, and rollback procedures are established.
+
+These are recommended follow-up controls, not prerequisites to run the two workflows as currently defined.
 
 For the deployment flow and security controls/limitations, see [ARCHITECTURE.md](./ARCHITECTURE.md) and open the [editable AWS architecture diagram](./deployment-architecture.drawio) in diagrams.net (draw.io).
 
@@ -86,17 +102,17 @@ Keep the database and uploaded images on persistent storage. The image filesyste
 
 ### 3. Configure GitHub Actions access to AWS
 
-The workflow uses a dedicated IAM user access key because this deployment is not using OIDC. This is a long-lived credential and is less secure than OIDC. Do not use root credentials. The IAM user's current ECR-only policy allows image publishing, but deployment will continue to fail until you add the ECS deployment permissions after creating the services and task definitions.
+The workflows currently use an IAM user access key because this deployment is not using OIDC. This is a long-lived credential and is less secure than OIDC. Do not use root credentials. The user used by the dev workflow needs ECR push permissions; the production workflow additionally needs ECR pull and ECS deployment permissions after the services and task definitions are created.
 
 Keep the IAM user's permissions narrow:
 
-- **ECR push:** `ecr:GetAuthorizationToken` requires `"Resource": "*"`. Grant `ecr:DescribeRepositories`, `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, `ecr:PutImage`, and `ecr:BatchGetImage` only on the exact repository ARN. For the configured `manikalasunitha/basic_spring_app` repository, use `arn:aws:ecr:eu-north-1:${aws:PrincipalAccount}:repository/manikalasunitha/basic_spring_app`. The repository path is part of the ARN; granting access to `repository/basic_spring_app`, `repository/manikalasunitha`, or the old `repository/secure-inventory` does not grant access to this repository.
+- **ECR push and production pull:** `ecr:GetAuthorizationToken` requires `"Resource": "*"`. Grant `ecr:DescribeRepositories`, `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, `ecr:PutImage`, `ecr:BatchGetImage`, and `ecr:GetDownloadUrlForLayer` only on the exact repository ARN. The production workflow needs the last two pull actions to fetch and scan the selected image. For the configured `manikalasunitha/basic_spring_app` repository, use `arn:aws:ecr:eu-north-1:${aws:PrincipalAccount}:repository/manikalasunitha/basic_spring_app`. The repository path is part of the ARN; granting access to `repository/basic_spring_app`, `repository/manikalasunitha`, or the old `repository/secure-inventory` does not grant access to this repository.
 - **ECS deploy:** `ecs:DescribeTaskDefinition`, `ecs:RegisterTaskDefinition`, `ecs:DescribeServices`, and `ecs:UpdateService` for only the relevant task definitions/services; `iam:PassRole` only for the ECS task and execution roles, with `iam:PassedToService` restricted to `ecs-tasks.amazonaws.com`. Add actual resource ARNs after creating these resources; do not use placeholder ARNs or the cluster ARN for service permissions.
 - **ECS task execution role:** ECR pull permissions, CloudWatch log permissions, and `secretsmanager:GetSecretValue` for the admin secret. Do not give the app task role access to the admin secret.
 
-For the current image-push `403`, update the **IAM user whose access key is stored in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`**. In IAM → Users → that user → Permissions, attach an inline policy like this. The policy uses the caller's account ID so it stays scoped to that account:
+The following ECR policy covers image publishing and pulling. Attach it to the IAM user whose key is configured in the GitHub environments; it is not sufficient by itself for ECS deployment, which also needs the scoped ECS actions and `iam:PassRole` described above. The policy uses the caller's account ID so it stays scoped to that account:
 
-The latest preflight error identifies the principal as `secure-inventory-deployer` and the missing action as `ecr:DescribeRepositories`. Make sure this action is included in the repository-scoped statement below and that the policy is attached to that exact IAM user (not only the ECS task execution role). Save the policy before rerunning Actions.
+The previously reported repository preflight error identified `ecr:DescribeRepositories`; confirm it remains included and that the policy is attached to the GitHub Actions IAM user, not only the ECS task execution role.
 
 ```json
 {
@@ -118,7 +134,8 @@ The latest preflight error identifies the principal as `secure-inventory-deploye
         "ecr:UploadLayerPart",
         "ecr:CompleteLayerUpload",
         "ecr:PutImage",
-        "ecr:BatchGetImage"
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer"
       ],
       "Resource": "arn:aws:ecr:eu-north-1:${aws:PrincipalAccount}:repository/manikalasunitha/basic_spring_app"
     }
@@ -126,44 +143,39 @@ The latest preflight error identifies the principal as `secure-inventory-deploye
 }
 ```
 
-The first `403 Forbidden` on a registry `HEAD` request for `/blobs/...` indicates the upload policy needs the layer check/upload actions. The newer `403` on `HEAD /v2/manikalasunitha/basic_spring_app/manifests/sha256:...` occurs at the image-manifest check; the AWS-documented private ECR push policy includes `ecr:BatchGetImage` for this operation. Add that action to the same repository-scoped statement above and attach the updated policy to `secure-inventory-deployer`. Keep `ecr:GetAuthorizationToken` in its separate `"Resource": "*"` statement. AWS's [ECR push permissions guide](https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-push-iam.html) lists `BatchGetImage` among the required push actions. If the manifest request still returns 403 after updating the policy, check for an explicit deny, permissions boundary, Organizations SCP, or ECR repository policy. Verify the repository exists in `eu-north-1` in the same AWS account used by GitHub and that `ECR_REPOSITORY` is exactly `manikalasunitha/basic_spring_app`.
+The earlier `/blobs/...` `403` was associated with layer check/upload permissions; the later manifest `403` required `ecr:BatchGetImage`. The production workflow also needs `ecr:GetDownloadUrlForLayer` to pull the selected image. Keep `ecr:GetAuthorizationToken` in its separate `"Resource": "*"` statement. AWS's [ECR push permissions guide](https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-push-iam.html) lists `BatchGetImage` among required push actions. If a 403 returns, check for an explicit deny, permissions boundary, Organizations SCP, or ECR repository policy.
 
-In GitHub **Settings → Secrets and variables → Actions → Secrets**, add these **repository secrets** using the dedicated IAM user's access key. Do not paste either value into chat, variables, files, or workflow logs:
+In each GitHub environment's **Settings → Secrets and variables → Actions → Secrets**, add these **environment secrets**. You can use the current IAM user's key for both environments while setting this up; for least privilege, use separate AWS identities and credentials for dev and prod. Do not paste either value into chat, variables, files, or workflow logs:
 
-| Repository secret | Value |
+| Environment secret | Value |
 |---|---|
 | `AWS_ACCESS_KEY_ID` | IAM user's access key ID |
 | `AWS_SECRET_ACCESS_KEY` | Matching secret access key |
 
 Protect the repository and Actions settings so only trusted maintainers can change workflows or use these secrets. Restrict who can trigger workflows, require reviewers for `prod`, and rotate/delete the IAM access key when no longer needed. Anyone who can modify a workflow that receives these secrets may be able to use the IAM user's permissions.
 
-In GitHub **Settings → Secrets and variables → Actions → Variables**, add:
-
-| Repository variable | Value |
-|---|---|
-| `AWS_REGION` | The region containing the ECR repository, for example `eu-north-1` |
-| `ECR_REPOSITORY` | Exact ECR repository name, including any namespace path, for example `manikalasunitha/basic_spring_app` |
-
-For `ECR_REPOSITORY`, enter the name in the **Value** field; the variable **Name** remains `ECR_REPOSITORY`. Slashes are valid in an ECR repository name. If the ECR console shows `manikalasunitha` as a namespace/folder, use the complete repository path `manikalasunitha/basic_spring_app`, not just `manikalasunitha`. Confirm that this exact repository exists in the account and `AWS_REGION` used by the workflow. The IAM user's ECR upload policy must also allow the repository ARN ending in `repository/manikalasunitha/basic_spring_app`; otherwise the preflight or image push will fail.
+In each GitHub environment's **Settings → Secrets and variables → Actions → Variables**, set `AWS_REGION` to `eu-north-1`, `ECR_REPOSITORY` to `manikalasunitha/basic_spring_app`, and the four ECS variables listed below. For `ECR_REPOSITORY`, the variable **Name** remains `ECR_REPOSITORY` and its **Value** is the complete path; slashes are valid. Confirm that this exact repository exists in the account and region used by the workflow.
 Do not add `SONAR_TOKEN` or Sonar analysis variables for this Automatic Analysis setup. In SonarCloud, keep Automatic Analysis enabled for the project and monitor its analysis result in the SonarCloud project page. It runs separately from this workflow, so it does not block ECR publishing or ECS deployment. If SonarCloud reports that Automatic Analysis conflicts with a CI scanner, ensure the Sonar scan action remains removed from this workflow.
 
-Create GitHub **environments** named `dev`, `qa`, and `prod`. In each environment, add:
+Create GitHub **environments** named `dev` and `prod` (create `qa` when a QA workflow is added). Add the following variables to both environments; the ECR repository is shared, while the ECS values must point to the matching environment:
 
 | Environment variable | Value |
 |---|---|
+| `AWS_REGION` | `eu-north-1` |
+| `ECR_REPOSITORY` | `manikalasunitha/basic_spring_app` |
 | `ECS_CLUSTER` | ECS cluster name |
 | `ECS_SERVICE` | ECS service name |
 | `ECS_TASK_DEFINITION` | Existing task-definition family or ARN |
 | `ECS_CONTAINER_NAME` | App container name in that task definition |
 
-Restrict allowed deployment branches and configure required reviewers for `prod`. Keep AWS account IDs, role ARNs, and infrastructure identifiers in variables; store only actual tokens/passwords as secrets.
+Restrict both environments to the `main` branch. Do not require manual reviewers for `dev` if you want its deployment to remain automatic; configure required reviewers for `prod`. Keep AWS account IDs, role ARNs, and infrastructure identifiers in variables; store only credentials/tokens as secrets.
 
 ### 4. Run and verify deployment
 
-1. Confirm ECR, ECS, Secrets Manager, EFS, IAM, and GitHub variables/environments are configured. Check SonarCloud Automatic Analysis separately in its project.
-2. Select **Actions → Secure Inventory CI and ECS Deployment → Run workflow**, choose the branch, then choose one target environment.
-3. Confirm secret/dependency scans, `mvn verify`, and the 60% JaCoCo coverage gate pass before image build/push. Review SonarCloud Automatic Analysis separately.
-4. Confirm the ECR image uses the branch and commit SHA tag. The workflow updates only the selected environment, registers a task-definition revision with that scanned image, and waits for ECS stability.
+1. Confirm ECR, ECS, Secrets Manager, EFS, IAM, and the `dev` GitHub environment settings are configured. Check SonarCloud Automatic Analysis separately in its project.
+2. Merge application changes into `main`. The development workflow automatically runs checks, pushes the passing image, and deploys to dev.
+3. Copy the `main-<12-character-commit-sha>` image tag from the successful dev workflow summary.
+4. Select **Actions → Secure Inventory Production Deployment → Run workflow**, run it from `main`, and enter that exact tag. Complete the `prod` environment approval if required.
 5. Verify the ECS service is healthy behind the load balancer and sign in using the administrator credentials in that environment's Secrets Manager secret.
 
 EarlyBird fails on medium-or-higher findings. The run on commit `e3737e4` failed because EarlyBird treated the AWS account number in the example ECR ARN as three possible national IDs (critical severity, low confidence); it also reported low-severity false positives for version tags that looked like email addresses, local HTTP examples, a `file://` CLI argument, and the intentional loopback-only Compose binding. The fixes keep the same behavior while avoiding those scanner patterns: use a caller-account IAM policy variable, pin the Trivy action by commit SHA, pass the task definition JSON directly to AWS CLI, omit explicit schemes in local-only examples, and assemble the loopback address from its prefix plus final octet. No real secret or personal identifier was found in that report. EarlyBird fails on medium-or-higher findings; Trivy fails on high/critical filesystem or container findings (ignoring unfixed vulnerabilities). Deployment is blocked if a scan, test, coverage check, or ECS stability wait fails. SonarCloud Automatic Analysis is monitored separately and is not a deployment gate in this workflow.

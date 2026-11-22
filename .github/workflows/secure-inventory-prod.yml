@@ -1,0 +1,351 @@
+name: Secure Inventory Production Deployment
+run-name: 'Deploy Secure Inventory to prod / ${{ inputs.image_tag }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Commit-based main-<12-character-sha> tag from a successful dev deployment
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: secure-inventory-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Verify and deploy selected image
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: prod
+    permissions:
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+      ECS_TASK_DEFINITION: ${{ vars.ECS_TASK_DEFINITION }}
+      ECS_CONTAINER_NAME: ${{ vars.ECS_CONTAINER_NAME }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+    outputs:
+      ecr_login_result: ${{ steps.ecr-login.outcome }}
+      image_pull_result: ${{ steps.image.outcome }}
+      image_digest: ${{ steps.image.outputs.uri }}
+      image_scan_result: ${{ steps.image-scan.outcome }}
+      image_scan_details: ${{ steps.image-scan-summary.outputs.details }}
+      service_check_result: ${{ steps.service-check.outcome }}
+      task_definition_result: ${{ steps.task-def.outcome }}
+      ecs_update_result: ${{ steps.ecs-update.outcome }}
+      ecs_service: ${{ vars.ECS_SERVICE }}
+    steps:
+      - name: Validate selected image tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE_TAG" =~ ^main-[0-9a-f]{12}$ ]]; then
+            echo "::error::Select a main-<12-character-commit-sha> image tag from a successful dev workflow run."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Verify and pull selected ECR image
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${AWS_REGION:?Set AWS_REGION in the prod environment}"
+          : "${ECR_REPOSITORY:?Set ECR_REPOSITORY in the prod environment}"
+          : "${REGISTRY:?ECR login did not return a registry}"
+
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          registry_account="${REGISTRY%%.*}"
+          if [ "$account_id" != "$registry_account" ]; then
+            echo "::error::AWS credentials resolve to account $account_id, but ECR login selected registry account $registry_account."
+            exit 1
+          fi
+
+          aws ecr describe-repositories \
+            --registry-id "$account_id" \
+            --repository-names "$ECR_REPOSITORY" \
+            --region "$AWS_REGION" \
+            --query 'repositories[0].repositoryUri' \
+            --output text >/dev/null
+
+          image_uri="$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker pull "$image_uri"
+          digest_uri="$(docker image inspect --format='{{index .RepoDigests 0}}' "$image_uri")"
+          if [[ ! "$digest_uri" =~ ^"$REGISTRY/$ECR_REPOSITORY"@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not resolve the pulled image to a valid ECR digest."
+            exit 1
+          fi
+          echo "uri=$digest_uri" >> "$GITHUB_OUTPUT"
+
+      - name: Scan selected image by digest
+        id: image-scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.uri }}
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+          format: json
+          output: trivy-production-image-results.json
+
+      - name: Summarize production image scan
+        id: image-scan-summary
+        if: always()
+        env:
+          SCAN_OUTCOME: ${{ steps.image-scan.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from collections import Counter
+          from pathlib import Path
+
+          def markdown(value):
+              return str(value or "—").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+          lines = [
+              "### Production Trivy image rescan",
+              f"- Result: **{os.environ.get('SCAN_OUTCOME', 'unknown')}**",
+          ]
+          report_path = Path("trivy-production-image-results.json")
+          if not report_path.is_file():
+              lines.append("- Trivy did not produce a JSON report; inspect the scan step logs.")
+          else:
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+              findings = [
+                  (result.get("Target", ""), finding)
+                  for result in report.get("Results") or []
+                  for finding in result.get("Vulnerabilities") or []
+                  if finding.get("Severity") in {"CRITICAL", "HIGH"}
+              ]
+              counts = Counter(finding.get("Severity") for _, finding in findings)
+              lines.append(
+                  f"- Blocking findings: **{len(findings)}** "
+                  f"(CRITICAL: {counts.get('CRITICAL', 0)}, HIGH: {counts.get('HIGH', 0)})."
+              )
+              if findings:
+                  lines.extend([
+                      "",
+                      "| Severity | Target | Package | Installed | Fixed in | Advisory | Details |",
+                      "|---|---|---|---|---|---|---|",
+                  ])
+                  findings.sort(
+                      key=lambda item: (
+                          0 if item[1].get("Severity") == "CRITICAL" else 1,
+                          item[1].get("VulnerabilityID", ""),
+                          item[1].get("PkgName", ""),
+                      )
+                  )
+                  for target, finding in findings:
+                      lines.append(
+                          "| "
+                          + " | ".join(
+                              markdown(value)
+                              for value in (
+                                  finding.get("Severity"),
+                                  target,
+                                  finding.get("PkgName"),
+                                  finding.get("InstalledVersion"),
+                                  finding.get("FixedVersion") or "No fixed version listed",
+                                  finding.get("VulnerabilityID"),
+                                  finding.get("Title"),
+                              )
+                          )
+                          + " |"
+                      )
+              else:
+                  lines.append("- No HIGH or CRITICAL vulnerabilities were reported.")
+
+          details = "\n".join(lines)
+          delimiter = f"PROD_TRIVY_DETAILS_{os.getpid()}"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"details<<{delimiter}\n{details}\n{delimiter}\n")
+          PY
+
+      - name: Verify the ECS service is configured for one task
+        id: service-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ECS_CLUSTER:?Set ECS_CLUSTER in the prod environment}"
+          : "${ECS_SERVICE:?Set ECS_SERVICE in the prod environment}"
+
+          service_count="$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'length(services[?status == `ACTIVE`])' \
+            --output text)"
+          if [ "$service_count" != "1" ]; then
+            echo "Expected one ACTIVE ECS service named $ECS_SERVICE in cluster $ECS_CLUSTER." >&2
+            exit 1
+          fi
+
+          desired_count="$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].desiredCount' \
+            --output text)"
+          if [ "$desired_count" != "1" ]; then
+            echo "ECS service $ECS_SERVICE must have desiredCount=1 for this SQLite deployment; found $desired_count." >&2
+            exit 1
+          fi
+
+      - name: Register task definition with the scanned image digest
+        id: task-def
+        shell: bash
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+        run: |
+          set -euo pipefail
+          : "${ECS_TASK_DEFINITION:?Set ECS_TASK_DEFINITION in the prod environment}"
+          : "${ECS_CONTAINER_NAME:?Set ECS_CONTAINER_NAME in the prod environment}"
+          : "${IMAGE_URI:?The selected image digest is unavailable}"
+
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_TASK_DEFINITION" \
+            --query taskDefinition \
+            --output json > task-definition.json
+
+          container_count="$(jq --arg name "$ECS_CONTAINER_NAME" '[.containerDefinitions[] | select(.name == $name)] | length' task-definition.json)"
+          if [ "$container_count" -ne 1 ]; then
+            echo "Expected exactly one task-definition container named $ECS_CONTAINER_NAME; found $container_count." >&2
+            exit 1
+          fi
+
+          jq --arg name "$ECS_CONTAINER_NAME" --arg image "$IMAGE_URI" '
+            del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+            | .containerDefinitions |= map(if .name == $name then .image = $image else . end)
+          ' task-definition.json > rendered-task-definition.json
+
+          task_definition_arn="$(aws ecs register-task-definition \
+            --cli-input-json "$(cat rendered-task-definition.json)" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)"
+          echo "arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Update ECS service and wait for stability
+        id: ecs-update
+        env:
+          TASK_DEFINITION_ARN: ${{ steps.task-def.outputs.arn }}
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+        run: |
+          set -euo pipefail
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$TASK_DEFINITION_ARN" \
+            --no-cli-pager
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+  summary:
+    name: Production deployment summary
+    if: ${{ always() }}
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      DEPLOY_RESULT: ${{ needs.deploy.result }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+      IMAGE_DIGEST: ${{ needs.deploy.outputs.image_digest }}
+      ECR_LOGIN_RESULT: ${{ needs.deploy.outputs.ecr_login_result }}
+      IMAGE_PULL_RESULT: ${{ needs.deploy.outputs.image_pull_result }}
+      IMAGE_SCAN_RESULT: ${{ needs.deploy.outputs.image_scan_result }}
+      IMAGE_SCAN_DETAILS: ${{ needs.deploy.outputs.image_scan_details }}
+      SERVICE_CHECK_RESULT: ${{ needs.deploy.outputs.service_check_result }}
+      TASK_DEFINITION_RESULT: ${{ needs.deploy.outputs.task_definition_result }}
+      ECS_UPDATE_RESULT: ${{ needs.deploy.outputs.ecs_update_result }}
+      ECS_SERVICE: ${{ needs.deploy.outputs.ecs_service }}
+      EVENT_NAME: ${{ github.event_name }}
+      REF_NAME: ${{ github.ref_name }}
+      COMMIT_SHA: ${{ github.sha }}
+      ACTOR: ${{ github.actor }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Publish production run summary
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          def status(name):
+              result = os.environ.get(name) or "not run"
+              result = result.lower()
+              icon = {
+                  "success": "✅",
+                  "failure": "❌",
+                  "cancelled": "⚪",
+                  "skipped": "⏭️",
+                  "not run": "⏭️",
+              }.get(result, "⚠️")
+              return f"{icon} **{result}**"
+
+          run_url = os.environ["RUN_URL"]
+          lines = [
+              "# Secure Inventory — Production promotion",
+              "",
+              f"**Overall status:** {status('DEPLOY_RESULT')}",
+              "",
+              "## Run context",
+              "",
+              "| Field | Value |",
+              "|---|---|",
+              f"| Trigger | `{os.environ.get('EVENT_NAME', 'unknown')}` |",
+              f"| Ref | `{os.environ.get('REF_NAME', 'unknown')}` |",
+              f"| Commit | [`{os.environ.get('COMMIT_SHA', '')[:12]}`]({run_url}) |",
+              f"| Actor | `{os.environ.get('ACTOR', 'unknown')}` |",
+              f"| Workflow run | [Open run]({run_url}) |",
+              "",
+              "## Promotion results",
+              "",
+              "| Stage | Result | Details |",
+              "|---|---|---|",
+              f"| ECR authentication | {status('ECR_LOGIN_RESULT')} | Authenticated to the configured registry. |",
+              f"| Image pull | {status('IMAGE_PULL_RESULT')} | Selected tag: `{os.environ.get('IMAGE_TAG', '')}`. |",
+              f"| Trivy HIGH/CRITICAL rescan | {status('IMAGE_SCAN_RESULT')} | Image is rescanned before production deployment. |",
+              f"| ECS single-task check | {status('SERVICE_CHECK_RESULT')} | SQLite deployment requires one active task. |",
+              f"| Task-definition registration | {status('TASK_DEFINITION_RESULT')} | Uses the scanned image digest, not a mutable tag. |",
+              f"| ECS update and stability wait | {status('ECS_UPDATE_RESULT')} | Service: `{os.environ.get('ECS_SERVICE', 'not configured')}`. |",
+              "",
+              "## Promoted artifact",
+              "",
+              f"- **Requested tag:** `{os.environ.get('IMAGE_TAG', '')}`",
+              f"- **Scanned/deployed digest:** `{os.environ.get('IMAGE_DIGEST') or 'Unavailable'}`",
+          ]
+          details = os.environ.get("IMAGE_SCAN_DETAILS")
+          if details:
+              lines.extend(["", details])
+          else:
+              lines.extend(["", "### Production image scan details", "", "Detailed Trivy output is unavailable; inspect the deployment job logs."])
+          if os.environ.get("DEPLOY_RESULT") != "success":
+              lines.extend([
+                  "",
+                  "## Next steps",
+                  "",
+                  "No successful production deployment was confirmed. Review the first failed stage above and its deployment-job logs before retrying.",
+              ])
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
