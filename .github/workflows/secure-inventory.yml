@@ -36,7 +36,6 @@ jobs:
       earlybird_result: ${{ steps.earlybird.outcome }}
       filesystem_scan_result: ${{ steps.filesystem_scan.outcome }}
       tests_coverage_result: ${{ steps.tests_coverage.outcome }}
-      sonar_result: ${{ steps.sonar.outcome }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -106,22 +105,6 @@ jobs:
       - name: Run tests and enforce 60% minimum line coverage
         id: tests_coverage
         run: mvn --batch-mode --no-transfer-progress verify
-
-      - name: SonarQube analysis and quality gate
-        id: sonar
-        uses: SonarSource/sonarqube-scan-action@v7.1.0
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          projectBaseDir: .
-          args: >
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
-            ${{ vars.SONAR_ORGANIZATION && format('-Dsonar.organization={0}', vars.SONAR_ORGANIZATION) || '' }}
-            -Dsonar.host.url=${{ vars.SONAR_HOST_URL || 'https://sonarcloud.io' }}
-            -Dsonar.java.binaries=target/classes
-            -Dsonar.java.test.binaries=target/test-classes
-            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
-            -Dsonar.qualitygate.wait=true
 
   build-scan-push:
     name: Build, scan, and push (${{ inputs.target_environment }})
@@ -302,7 +285,6 @@ jobs:
       EARLYBIRD_RESULT: ${{ needs.quality.outputs.earlybird_result }}
       FILESYSTEM_SCAN_RESULT: ${{ needs.quality.outputs.filesystem_scan_result }}
       TESTS_COVERAGE_RESULT: ${{ needs.quality.outputs.tests_coverage_result }}
-      SONAR_RESULT: ${{ needs.quality.outputs.sonar_result }}
       ECR_LOGIN_RESULT: ${{ needs.build-scan-push.outputs.ecr_login_result }}
       IMAGE_BUILD_RESULT: ${{ needs.build-scan-push.outputs.image_build_result }}
       IMAGE_SCAN_RESULT: ${{ needs.build-scan-push.outputs.image_scan_result }}
@@ -319,7 +301,7 @@ jobs:
             echo "| EarlyBird secret scan | ${EARLYBIRD_RESULT:-${QUALITY_RESULT}} |"
             echo "| Trivy filesystem/dependency/configuration scan | ${FILESYSTEM_SCAN_RESULT:-${QUALITY_RESULT}} |"
             echo "| Maven tests and JaCoCo coverage gate | ${TESTS_COVERAGE_RESULT:-${QUALITY_RESULT}} |"
-            echo "| SonarQube analysis and quality gate | ${SONAR_RESULT:-${QUALITY_RESULT}} |"
+            echo "| SonarCloud Automatic Analysis | Runs independently; check SonarCloud project |"
             echo "| ECR login | ${ECR_LOGIN_RESULT:-${BUILD_RESULT}} |"
             echo "| Docker image build | ${IMAGE_BUILD_RESULT:-${BUILD_RESULT}} |"
             echo "| Trivy container image scan | ${IMAGE_SCAN_RESULT:-${BUILD_RESULT}} |"

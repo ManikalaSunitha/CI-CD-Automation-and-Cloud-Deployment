@@ -58,7 +58,7 @@ For remote access, terminate TLS at a trusted reverse proxy or load balancer and
 
 ## AWS ECS and CI/CD
 
-The workflow is [`./.github/workflows/secure-inventory.yml`](./.github/workflows/secure-inventory.yml). It runs secret and dependency/configuration scans, Maven tests, a JaCoCo line-coverage gate, SonarQube analysis and quality-gate check, then builds and scans a Docker image, pushes it to private ECR, and updates one ECS service. All quality gates must pass before publishing or deploying. JaCoCo enforces at least **60% line coverage**.
+The workflow is [`./.github/workflows/secure-inventory.yml`](./.github/workflows/secure-inventory.yml). It runs secret and dependency/configuration scans, Maven tests, a JaCoCo line-coverage gate, then builds and scans a Docker image, pushes it to private ECR, and optionally updates one ECS service. SonarCloud Automatic Analysis runs independently on the project; it does not gate this workflow. JaCoCo enforces at least **60% line coverage**.
 
 The workflow currently runs only when manually dispatched. Its input selects one of `dev`, `qa`, or `prod`; `deploy_to_ecs` defaults to false so you can run quality checks, build, scan, and push the image before ECS is ready. The run title and job names include the selected environment, and a final GitHub Actions summary lists each check's result. Enable ECS deployment only after the selected environment's ECS service/task definition and deployment settings are configured. EarlyBird scans the app repository's tracked files from the repository root, not the scanner's own checkout. Because this setup uses an IAM user instead of GitHub OIDC, the workflow authenticates with that user's long-lived access key stored as GitHub Actions secrets. This is less secure than OIDC: use a dedicated least-privilege user, protect access to the repository and its Actions settings, rotate the key, and never put it in variables, source files, workflow output, or the image.
 
@@ -107,13 +107,7 @@ In GitHub **Settings → Secrets and variables → Actions → Variables**, add:
 |---|---|
 | `AWS_REGION` | AWS region, for example `eu-north-1` |
 | `ECR_REPOSITORY` | ECR repository name, for example `secure-inventory` |
-| `SONAR_PROJECT_KEY` | Project key from SonarQube |
-| `SONAR_HOST_URL` | SonarQube URL; omit to use `https://sonarcloud.io` |
-| `SONAR_ORGANIZATION` | Required for SonarQube Cloud; omit for self-hosted SonarQube |
-
-Add the **repository secret** `SONAR_TOKEN` using a SonarQube user/project analysis token. The SonarQube server must be reachable by the GitHub-hosted runner; for a private server, use an appropriately network-connected/self-hosted runner or securely expose the server.
-
-In SonarQube, create the project and assign a quality gate to it. Use the exact project key as `SONAR_PROJECT_KEY`; create a token with permission to analyze that project and save it as `SONAR_TOKEN`. For SonarQube Cloud, set `SONAR_ORGANIZATION` and leave `SONAR_HOST_URL` unset (or set it to `https://sonarcloud.io`). For a self-hosted server, set `SONAR_HOST_URL` to its HTTPS URL and leave `SONAR_ORGANIZATION` unset. The workflow imports `target/site/jacoco/jacoco.xml` and waits for the assigned gate; configure the gate's conditions in SonarQube so a failed quality policy blocks deployment.
+Do not add `SONAR_TOKEN` or Sonar analysis variables for this Automatic Analysis setup. In SonarCloud, keep Automatic Analysis enabled for the project and monitor its analysis result in the SonarCloud project page. It runs separately from this workflow, so it does not block ECR publishing or ECS deployment. If SonarCloud reports that Automatic Analysis conflicts with a CI scanner, ensure the Sonar scan action remains removed from this workflow.
 
 Create GitHub **environments** named `dev`, `qa`, and `prod`. In each environment, add:
 
@@ -128,11 +122,11 @@ Restrict allowed deployment branches and configure required reviewers for `prod`
 
 ### 4. Run and verify deployment
 
-1. Confirm ECR, ECS, Secrets Manager, EFS, IAM, GitHub variables/environments, and SonarQube project/token are configured.
+1. Confirm ECR, ECS, Secrets Manager, EFS, IAM, and GitHub variables/environments are configured. Check SonarCloud Automatic Analysis separately in its project.
 2. Select **Actions → Secure Inventory CI and ECS Deployment → Run workflow**, choose the branch, then choose one target environment.
-3. Confirm secret/dependency scans, `mvn verify`, 60% JaCoCo coverage, and the SonarQube quality gate all pass before image build/push.
+3. Confirm secret/dependency scans, `mvn verify`, and the 60% JaCoCo coverage gate pass before image build/push. Review SonarCloud Automatic Analysis separately.
 4. Confirm the ECR image uses the branch and commit SHA tag. The workflow updates only the selected environment, registers a task-definition revision with that scanned image, and waits for ECS stability.
 5. Verify the ECS service is healthy behind the load balancer and sign in using the administrator credentials in that environment's Secrets Manager secret.
 
-EarlyBird fails on medium-or-higher findings. Trivy fails on high/critical filesystem or container findings (ignoring unfixed vulnerabilities). Deployment is blocked if a scan, test, coverage check, SonarQube quality gate, or ECS stability wait fails.
+EarlyBird fails on medium-or-higher findings. Trivy fails on high/critical filesystem or container findings (ignoring unfixed vulnerabilities). Deployment is blocked if a scan, test, coverage check, or ECS stability wait fails. SonarCloud Automatic Analysis is monitored separately and is not a deployment gate in this workflow.
 # CI-CD-Automation-and-Cloud-Deployment
