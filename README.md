@@ -90,7 +90,7 @@ The workflow uses a dedicated IAM user access key because this deployment is not
 
 Keep the IAM user's permissions narrow:
 
-- **ECR push:** `ecr:GetAuthorizationToken` requires `"Resource": "*"`. Grant `ecr:DescribeRepositories`, `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, and `ecr:PutImage` only on the exact repository ARN. For the configured `manikalasunitha/basic_spring_app` repository, use `arn:aws:ecr:eu-north-1:${aws:PrincipalAccount}:repository/manikalasunitha/basic_spring_app`. The repository path is part of the ARN; granting access to `repository/basic_spring_app`, `repository/manikalasunitha`, or the old `repository/secure-inventory` does not grant access to this repository.
+- **ECR push:** `ecr:GetAuthorizationToken` requires `"Resource": "*"`. Grant `ecr:DescribeRepositories`, `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, `ecr:PutImage`, and `ecr:BatchGetImage` only on the exact repository ARN. For the configured `manikalasunitha/basic_spring_app` repository, use `arn:aws:ecr:eu-north-1:${aws:PrincipalAccount}:repository/manikalasunitha/basic_spring_app`. The repository path is part of the ARN; granting access to `repository/basic_spring_app`, `repository/manikalasunitha`, or the old `repository/secure-inventory` does not grant access to this repository.
 - **ECS deploy:** `ecs:DescribeTaskDefinition`, `ecs:RegisterTaskDefinition`, `ecs:DescribeServices`, and `ecs:UpdateService` for only the relevant task definitions/services; `iam:PassRole` only for the ECS task and execution roles, with `iam:PassedToService` restricted to `ecs-tasks.amazonaws.com`. Add actual resource ARNs after creating these resources; do not use placeholder ARNs or the cluster ARN for service permissions.
 - **ECS task execution role:** ECR pull permissions, CloudWatch log permissions, and `secretsmanager:GetSecretValue` for the admin secret. Do not give the app task role access to the admin secret.
 
@@ -117,7 +117,8 @@ The latest preflight error identifies the principal as `secure-inventory-deploye
         "ecr:InitiateLayerUpload",
         "ecr:UploadLayerPart",
         "ecr:CompleteLayerUpload",
-        "ecr:PutImage"
+        "ecr:PutImage",
+        "ecr:BatchGetImage"
       ],
       "Resource": "arn:aws:ecr:eu-north-1:${aws:PrincipalAccount}:repository/manikalasunitha/basic_spring_app"
     }
@@ -125,7 +126,7 @@ The latest preflight error identifies the principal as `secure-inventory-deploye
 }
 ```
 
-The reported `403 Forbidden` is returned for a registry `HEAD` request to `/v2/manikalasunitha/basic_spring_app/blobs/...`, which is the layer-availability check during `docker push`. Since AWS credentials configuration, ECR login, image build, and the Trivy image scan succeeded, the immediate likely cause is that the IAM user's ECR upload actions are missing or scoped to the wrong repository ARN. If the policy above is already attached, check for an explicit deny in the IAM user's other policies, a permissions boundary, an AWS Organizations SCP, or an ECR repository policy. Verify the repository exists in `eu-north-1` in the same AWS account used by the GitHub Actions credentials and that the workflow variable `ECR_REPOSITORY` is exactly `manikalasunitha/basic_spring_app`. The workflow preflights the caller account and exact repository URI before building, but only an actual push can confirm layer-upload permissions.
+The first `403 Forbidden` on a registry `HEAD` request for `/blobs/...` indicates the upload policy needs the layer check/upload actions. The newer `403` on `HEAD /v2/manikalasunitha/basic_spring_app/manifests/sha256:...` occurs at the image-manifest check; the AWS-documented private ECR push policy includes `ecr:BatchGetImage` for this operation. Add that action to the same repository-scoped statement above and attach the updated policy to `secure-inventory-deployer`. Keep `ecr:GetAuthorizationToken` in its separate `"Resource": "*"` statement. AWS's [ECR push permissions guide](https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-push-iam.html) lists `BatchGetImage` among the required push actions. If the manifest request still returns 403 after updating the policy, check for an explicit deny, permissions boundary, Organizations SCP, or ECR repository policy. Verify the repository exists in `eu-north-1` in the same AWS account used by GitHub and that `ECR_REPOSITORY` is exactly `manikalasunitha/basic_spring_app`.
 
 In GitHub **Settings → Secrets and variables → Actions → Secrets**, add these **repository secrets** using the dedicated IAM user's access key. Do not paste either value into chat, variables, files, or workflow logs:
 
