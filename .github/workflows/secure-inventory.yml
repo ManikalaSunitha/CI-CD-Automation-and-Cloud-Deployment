@@ -466,7 +466,8 @@ jobs:
       service_check_result: ${{ steps.service_check.outcome }}
       task_definition_result: ${{ steps.task_def.outcome }}
       ecs_update_result: ${{ steps.ecs_update.outcome }}
-      application_url: ${{ vars.APP_URL }}
+      application_host: ${{ vars.APP_HOST }}
+      application_port: ${{ vars.APP_PORT }}
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
@@ -586,7 +587,8 @@ jobs:
       SERVICE_CHECK_RESULT: ${{ needs.deploy-ecs.outputs.service_check_result }}
       TASK_DEFINITION_RESULT: ${{ needs.deploy-ecs.outputs.task_definition_result }}
       ECS_UPDATE_RESULT: ${{ needs.deploy-ecs.outputs.ecs_update_result }}
-      APPLICATION_URL: ${{ needs.deploy-ecs.outputs.application_url }}
+      APPLICATION_HOST: ${{ needs.deploy-ecs.outputs.application_host }}
+      APPLICATION_PORT: ${{ needs.deploy-ecs.outputs.application_port }}
       EVENT_NAME: ${{ github.event_name }}
       REF_NAME: ${{ github.ref_name }}
       COMMIT_SHA: ${{ github.sha }}
@@ -625,11 +627,17 @@ jobs:
           else:
               overall_result = os.environ.get("QUALITY_RESULT", "unknown")
 
-          application_url = value("APPLICATION_URL", "")
+          application_host = value("APPLICATION_HOST", "")
+          application_port = value("APPLICATION_PORT", "")
+          application_url = (
+              f"http://{application_host}:{application_port}/"
+              if application_host and application_port
+              else ""
+          )
           application_link = (
-              f"[Open deployed application]({application_url})"
+              f"[{application_host}:{application_port}]({application_url})"
               if application_url
-              else "Not configured — set `APP_URL` in the `dev` GitHub environment."
+              else "Not configured — set `APP_HOST` and `APP_PORT` in the `dev` GitHub environment."
           )
 
           lines = [
@@ -646,7 +654,7 @@ jobs:
               f"| Commit | [`{value('COMMIT_SHA')[:12]}`]({value('RUN_URL')}) |",
               f"| Actor | `{value('ACTOR')}` |",
               f"| Workflow run | [Open run]({value('RUN_URL')}) |",
-              f"| Application | {application_link} |",
+              f"| Application endpoint | {application_link} |",
               "",
               "## Pipeline results",
               "",

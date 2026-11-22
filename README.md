@@ -156,10 +156,10 @@ In each GitHub environment's **Settings → Secrets and variables → Actions �
 
 Protect the repository and Actions settings so only trusted maintainers can change workflows or use these secrets. Restrict who can trigger workflows, require reviewers for `prod`, and rotate/delete the IAM access key when no longer needed. Anyone who can modify a workflow that receives these secrets may be able to use the IAM user's permissions.
 
-In each GitHub environment's **Settings → Secrets and variables → Actions → Variables**, set `AWS_REGION` to `eu-north-1`, `ECR_REPOSITORY` to `manikalasunitha/basic_spring_app`, and the ECS variables listed below. For `ECR_REPOSITORY`, the variable **Name** remains `ECR_REPOSITORY` and its **Value** is the complete path; slashes are valid. Confirm that this exact repository exists in the account and region used by the workflow.
+Set the shared repository variables `AWS_REGION=eu-north-1`, `ECR_REPOSITORY=manikalasunitha/basic_spring_app`, `ECS_CLUSTER=secure_inventory_cluster`, and `APP_HOST=secure-inventory-alb-1103558434.eu-north-1.elb.amazonaws.com` under **Settings → Secrets and variables → Actions → Variables**. For `ECR_REPOSITORY`, the variable value is the complete path; slashes are valid. Confirm that this exact repository exists in the account and region used by the workflow.
 Do not add `SONAR_TOKEN` or Sonar analysis variables for this Automatic Analysis setup. In SonarCloud, keep Automatic Analysis enabled for the project and monitor its analysis result in the SonarCloud project page. It runs separately from this workflow, so it does not block ECR publishing or ECS deployment. If SonarCloud reports that Automatic Analysis conflicts with a CI scanner, ensure the Sonar scan action remains removed from this workflow.
 
-Create GitHub **environments** named `dev` and `prod` (create `qa` when a QA workflow is added). Add the following variables to each environment; the ECR repository is shared, while the ECS values and `APP_URL` must point to the matching environment:
+Create GitHub **environments** named `dev`, `qa`, and `prod`. Add the environment-specific ECS values and application listener port to each environment:
 
 | Environment variable | Value |
 |---|---|
@@ -169,9 +169,9 @@ Create GitHub **environments** named `dev` and `prod` (create `qa` when a QA wor
 | `ECS_SERVICE` | ECS service name |
 | `ECS_TASK_DEFINITION` | Existing task-definition family or ARN |
 | `ECS_CONTAINER_NAME` | App container name in that task definition |
-| `APP_URL` | Public HTTPS URL for this environment, including its path prefix if applicable |
+| `APP_PORT` | `80` for DEV, `81` for QA, `82` for PROD |
 
-All three workflow summaries include a clickable application link after a successful deployment. Set `APP_URL` to the actual reachable URL; the workflows do not create or discover the URL. Restrict `dev`, `qa`, and `prod` to the `main` branch. Configure required reviewers for `prod`; QA may also have reviewers if you want approval before its manual promotion proceeds. Keep AWS account IDs, role ARNs, and infrastructure identifiers in variables; store only credentials/tokens as secrets.
+All three workflow summaries include a clickable HTTP link showing the ALB DNS hostname and environment listener port after a successful deployment. This ALB hostname resolves to changing AWS IP addresses; do not pin a resolved IP. The ALB security group currently permits inbound HTTP on ports 80-82 from anywhere for testing. HTTP is unencrypted: do not use real credentials or transmit sensitive data. Restrict access to your IP or configure HTTPS before using this beyond temporary testing. Restrict `dev`, `qa`, and `prod` to the `main` branch. Configure required reviewers for `prod`; QA may also have reviewers if you want approval before its manual promotion proceeds. Keep AWS account IDs, role ARNs, and infrastructure identifiers in variables; store only credentials/tokens as secrets.
 
 The ECS variables for the resources currently created in `eu-north-1` are:
 
@@ -181,7 +181,7 @@ The ECS variables for the resources currently created in `eu-north-1` are:
 | `qa` | `secure_inventory_cluster` | `qa-service` | `qa` | `qa` |
 | `prod` | `secure_inventory_cluster` | `prod-service` | `prod` | `prod` |
 
-Do not set `APP_URL` until the environment has a reachable viewer endpoint. The current ALB has only an HTTP listener and its security group permits port 80 from the CloudFront managed prefix list; there is not yet a CloudFront distribution. AWS currently blocks CloudFront creation for this account pending account verification. Direct access on the QA/PROD listener ports is not allowed by the current ALB security group. Request account verification through AWS Support before configuring the CloudFront URLs.
+The ECS task IP is dynamic and should not be used as the deployment URL. Use the ALB hostname plus the environment listener port shown in the summary.
 
 ### 4. Run and verify deployment
 

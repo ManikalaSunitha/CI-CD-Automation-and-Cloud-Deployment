@@ -41,7 +41,8 @@ jobs:
       service_check_result: ${{ steps.service-check.outcome }}
       task_definition_result: ${{ steps.task-def.outcome }}
       ecs_update_result: ${{ steps.ecs-update.outcome }}
-      application_url: ${{ vars.APP_URL }}
+      application_host: ${{ vars.APP_HOST }}
+      application_port: ${{ vars.APP_PORT }}
       ecs_service: ${{ vars.ECS_SERVICE }}
     steps:
       - name: Validate selected image tag
@@ -203,7 +204,8 @@ jobs:
       TASK_DEFINITION_RESULT: ${{ needs.deploy.outputs.task_definition_result }}
       ECS_UPDATE_RESULT: ${{ needs.deploy.outputs.ecs_update_result }}
       ECS_SERVICE: ${{ needs.deploy.outputs.ecs_service }}
-      APPLICATION_URL: ${{ needs.deploy.outputs.application_url }}
+      APPLICATION_HOST: ${{ needs.deploy.outputs.application_host }}
+      APPLICATION_PORT: ${{ needs.deploy.outputs.application_port }}
       SOURCE_COMMIT: ${{ inputs.image_tag }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
@@ -231,11 +233,17 @@ jobs:
 
           image_tag = os.environ.get("IMAGE_TAG", "")
           run_url = os.environ["RUN_URL"]
-          application_url = os.environ.get("APPLICATION_URL", "")
+          application_host = os.environ.get("APPLICATION_HOST", "")
+          application_port = os.environ.get("APPLICATION_PORT", "")
+          application_url = (
+              f"http://{application_host}:{application_port}/"
+              if application_host and application_port
+              else ""
+          )
           application_link = (
-              f"[Open deployed application]({application_url})"
+              f"[{application_host}:{application_port}]({application_url})"
               if application_url
-              else "Not configured — set `APP_URL` in the `qa` GitHub environment."
+              else "Not configured — set `APP_HOST` and `APP_PORT` in the `qa` GitHub environment."
           )
           lines = [
               "# Secure Inventory — QA deployment",
@@ -251,7 +259,7 @@ jobs:
               f"| Deployed image tag | `{markdown(os.environ.get('IMAGE_TAG'))}` |",
               f"| Image digest | `{markdown(os.environ.get('IMAGE_DIGEST'))}` |",
               f"| QA ECS service | `{markdown(os.environ.get('ECS_SERVICE'))}` |",
-              f"| QA application | {application_link} |",
+              f"| QA application endpoint | {application_link} |",
               f"| QA workflow run | [Open run]({run_url}) |",
               "",
               "## Deployment checks",
@@ -266,13 +274,13 @@ jobs:
               f"| ECS update and stability wait | {status('ECS_UPDATE_RESULT')} | Waits for the QA service to stabilize. |",
           ]
           if os.environ.get("DEPLOY_RESULT") == "success" and application_url:
-              lines.extend(["", "## Test the QA application", "", f"[Open the QA application]({application_url})"])
+              lines.extend(["", "## Test the QA application", "", f"[Open QA at {application_host}:{application_port}]({application_url})"])
           else:
               lines.extend([
                   "",
                   "## Next steps",
                   "",
-                  "If deployment failed, review the first failed stage and its job logs. If it succeeded but no application link is shown, configure `APP_URL` in the `qa` GitHub environment.",
+                  "If deployment failed, review the first failed stage and its job logs. If it succeeded but no application link is shown, configure `APP_HOST` and `APP_PORT` in the `qa` GitHub environment.",
               ])
           Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY

@@ -42,7 +42,8 @@ jobs:
       task_definition_result: ${{ steps.task-def.outcome }}
       ecs_update_result: ${{ steps.ecs-update.outcome }}
       ecs_service: ${{ vars.ECS_SERVICE }}
-      application_url: ${{ vars.APP_URL }}
+      application_host: ${{ vars.APP_HOST }}
+      application_port: ${{ vars.APP_PORT }}
     steps:
       - name: Validate selected image tag
         shell: bash
@@ -279,7 +280,8 @@ jobs:
       TASK_DEFINITION_RESULT: ${{ needs.deploy.outputs.task_definition_result }}
       ECS_UPDATE_RESULT: ${{ needs.deploy.outputs.ecs_update_result }}
       ECS_SERVICE: ${{ needs.deploy.outputs.ecs_service }}
-      APPLICATION_URL: ${{ needs.deploy.outputs.application_url }}
+      APPLICATION_HOST: ${{ needs.deploy.outputs.application_host }}
+      APPLICATION_PORT: ${{ needs.deploy.outputs.application_port }}
       EVENT_NAME: ${{ github.event_name }}
       REF_NAME: ${{ github.ref_name }}
       COMMIT_SHA: ${{ github.sha }}
@@ -306,11 +308,17 @@ jobs:
               return f"{icon} **{result}**"
 
           run_url = os.environ["RUN_URL"]
-          application_url = os.environ.get("APPLICATION_URL", "")
+          application_host = os.environ.get("APPLICATION_HOST", "")
+          application_port = os.environ.get("APPLICATION_PORT", "")
+          application_url = (
+              f"http://{application_host}:{application_port}/"
+              if application_host and application_port
+              else ""
+          )
           application_link = (
-              f"[Open deployed application]({application_url})"
+              f"[{application_host}:{application_port}]({application_url})"
               if application_url
-              else "Not configured — set `APP_URL` in the `prod` GitHub environment."
+              else "Not configured — set `APP_HOST` and `APP_PORT` in the `prod` GitHub environment."
           )
           lines = [
               "# Secure Inventory — Production promotion",
@@ -326,7 +334,7 @@ jobs:
               f"| Commit | [`{os.environ.get('COMMIT_SHA', '')[:12]}`]({run_url}) |",
               f"| Actor | `{os.environ.get('ACTOR', 'unknown')}` |",
               f"| Workflow run | [Open run]({run_url}) |",
-              f"| Application | {application_link} |",
+              f"| Application endpoint | {application_link} |",
               "",
               "## Promotion results",
               "",
@@ -345,7 +353,7 @@ jobs:
               f"- **Scanned/deployed digest:** `{os.environ.get('IMAGE_DIGEST') or 'Unavailable'}`",
           ]
           if os.environ.get("DEPLOY_RESULT") == "success" and application_url:
-              lines.extend(["", "## Deployed application", "", f"[Open the production application]({application_url})"])
+              lines.extend(["", "## Deployed application", "", f"[Open PROD at {application_host}:{application_port}]({application_url})"])
           details = os.environ.get("IMAGE_SCAN_DETAILS")
           if details:
               lines.extend(["", details])
