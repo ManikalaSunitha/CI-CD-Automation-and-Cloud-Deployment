@@ -121,6 +121,7 @@ jobs:
       ecr_login_result: ${{ steps.ecr_login.outcome }}
       image_build_result: ${{ steps.image_build.outcome }}
       image_scan_result: ${{ steps.image_scan.outcome }}
+      image_scan_details: ${{ steps.image_scan_summary.outputs.details }}
       ecr_push_result: ${{ steps.image.outcome }}
     steps:
       - name: Checkout source
@@ -154,10 +155,94 @@ jobs:
           IMAGE_TAG: ${{ needs.quality.outputs.image_tag }}
         with:
           image-ref: ${{ steps.ecr_login.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ needs.quality.outputs.image_tag }}
-          format: table
+          format: json
+          output: trivy-image-results.json
           exit-code: '1'
           ignore-unfixed: true
           severity: CRITICAL,HIGH
+
+      - name: Summarize container scan findings
+        id: image_scan_summary
+        if: always()
+        env:
+          SCAN_OUTCOME: ${{ steps.image_scan.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from collections import Counter
+          from pathlib import Path
+
+          def markdown(value):
+              return str(value or "—").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+          report_path = Path("trivy-image-results.json")
+          lines = [
+              "### Trivy image scan details",
+              f"- Scan step result: **{os.environ.get('SCAN_OUTCOME', 'unknown')}**",
+          ]
+
+          if not report_path.is_file():
+              lines.append("- No Trivy JSON report was produced; check the scan-step logs for an image pull, scanner, or configuration error.")
+          else:
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+              findings = []
+              for result in report.get("Results") or []:
+                  for finding in result.get("Vulnerabilities") or []:
+                      if finding.get("Severity") in {"CRITICAL", "HIGH"}:
+                          findings.append((result.get("Target", ""), finding))
+
+              counts = Counter(finding.get("Severity") for _, finding in findings)
+              lines.append(
+                  f"- Blocking findings: **{len(findings)}** "
+                  f"(CRITICAL: {counts.get('CRITICAL', 0)}, HIGH: {counts.get('HIGH', 0)})."
+              )
+              if findings:
+                  lines.extend([
+                      "",
+                      "| Severity | Target | Package | Installed | Fixed in | Advisory | Details |",
+                      "|---|---|---|---|---|---|---|",
+                  ])
+                  findings.sort(
+                      key=lambda item: (
+                          0 if item[1].get("Severity") == "CRITICAL" else 1,
+                          item[1].get("VulnerabilityID", ""),
+                          item[1].get("PkgName", ""),
+                      )
+                  )
+                  for target, finding in findings:
+                      fixed = finding.get("FixedVersion") or "No fixed version listed"
+                      lines.append(
+                          "| "
+                          + " | ".join(
+                              markdown(value)
+                              for value in (
+                                  finding.get("Severity"),
+                                  target,
+                                  finding.get("PkgName"),
+                                  finding.get("InstalledVersion"),
+                                  fixed,
+                                  finding.get("VulnerabilityID"),
+                                  finding.get("Title"),
+                              )
+                          )
+                          + " |"
+                      )
+                  lines.extend([
+                      "",
+                      "**Why this blocks the workflow:** the scan is configured to fail on any HIGH or CRITICAL finding. The ECR push step runs only after a successful scan, so the image was not pushed and the ECS deployment could not proceed.",
+                  ])
+              else:
+                  lines.append("- No HIGH or CRITICAL vulnerabilities were reported in the image.")
+
+          details = "\n".join(lines)
+          print(details)
+          delimiter = f"TRIVY_DETAILS_{os.getpid()}"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"details<<{delimiter}\n{details}\n{delimiter}\n")
+          PY
 
       - name: Push image after all scans pass
         id: image
@@ -288,6 +373,7 @@ jobs:
       ECR_LOGIN_RESULT: ${{ needs.build-scan-push.outputs.ecr_login_result }}
       IMAGE_BUILD_RESULT: ${{ needs.build-scan-push.outputs.image_build_result }}
       IMAGE_SCAN_RESULT: ${{ needs.build-scan-push.outputs.image_scan_result }}
+      IMAGE_SCAN_DETAILS: ${{ needs.build-scan-push.outputs.image_scan_details }}
       ECR_PUSH_RESULT: ${{ needs.build-scan-push.outputs.ecr_push_result }}
     steps:
       - name: Publish workflow summary
@@ -317,5 +403,12 @@ jobs:
             fi
             if [ -n "$IMAGE_URI" ]; then
               echo "- Image URI: \`${IMAGE_URI}\`"
+            fi
+            echo
+            if [ -n "$IMAGE_SCAN_DETAILS" ]; then
+              printf '%s\n' "$IMAGE_SCAN_DETAILS"
+            else
+              echo "### Trivy image scan details"
+              echo "No detailed scan report was passed to the summary job; inspect the build-and-scan job logs."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

@@ -1,5 +1,7 @@
 # Secure Inventory Deployment Architecture
 
+Open the editable [AWS deployment diagram](./deployment-architecture.drawio) in diagrams.net (draw.io).
+
 ## Deployment flow
 
 The target design has one shared ECR repository and ECS cluster, with separate dev, QA, and prod services, task definitions, target groups, EFS access points, and data. A single CloudFront hostname can expose the environments under `/dev/`, `/qa/`, and `/prod/`. The AWS resources and listener rules are being configured manually; verify each actual setting in AWS before enabling ECS deployment.
@@ -34,6 +36,14 @@ flowchart LR
 ```
 
 The diagram shows the intended end state, not a claim that every AWS resource is already complete. The current workflow supports the checks and build/push path; ECS deployment stays off by default. Enable it only once the selected task definition, service, network, EFS mount, secret references, and least-privilege IAM permissions are verified.
+
+## Trivy image scan failure diagnosis
+
+The supplied run scanned image `main-cdd418fde516` and failed in the **Trivy container image scan**. Trivy reported **38 HIGH/CRITICAL vulnerabilities (22 HIGH, 16 CRITICAL)**, all in Java dependencies inside `app/app.jar`; the Ubuntu 26.04 base image and the `pebble` Go binary each reported zero vulnerabilities. The vulnerable versions came from the Spring Boot 3.5.7 dependency set: Spring Boot 3.5.7, Jackson 2.19.2, Tomcat 10.1.48, Spring Framework 6.2.12, Spring Data 3.5.5, Spring Security 6.5.6, and Thymeleaf 3.1.3.
+
+This was not a SonarCloud, AWS authentication, or base-image failure. The container scan is configured with `severity: CRITICAL,HIGH` and `exit-code: '1'`, so any finding at those severities fails the step. The image push is sequenced after that gate; therefore the image was not pushed and the ECS deployment could not run.
+
+The dependency baseline has been updated to Spring Boot 3.5.16, Jackson 2.21.7, and Tomcat 10.1.62. Spring Boot's managed dependencies now resolve Spring Framework 6.2.19, Spring Data 3.5.13, Spring Security 6.5.11, and Thymeleaf 3.1.5. These versions meet or exceed the fixed versions shown in the supplied report. Maven tests and the coverage gate pass locally; a fresh GitHub Actions image scan is still required to confirm against the live Trivy vulnerability database. The workflow summary now includes the scan counts, each HIGH/CRITICAL package/advisory, installed and fixed versions, and why the gate stopped the push.
 
 ## Security controls and limitations
 

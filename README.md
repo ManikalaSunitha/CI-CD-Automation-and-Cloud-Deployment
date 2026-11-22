@@ -62,7 +62,7 @@ The workflow is [`./.github/workflows/secure-inventory.yml`](./.github/workflows
 
 The workflow currently runs only when manually dispatched. Its input selects one of `dev`, `qa`, or `prod`; `deploy_to_ecs` defaults to false so you can run quality checks, build, scan, and push the image before ECS is ready. The run title and job names include the selected environment, and a final GitHub Actions summary lists each check's result. Enable ECS deployment only after the selected environment's ECS service/task definition and deployment settings are configured. EarlyBird scans the app repository's tracked files from the repository root, not the scanner's own checkout. Because this setup uses an IAM user instead of GitHub OIDC, the workflow authenticates with that user's long-lived access key stored as GitHub Actions secrets. This is less secure than OIDC: use a dedicated least-privilege user, protect access to the repository and its Actions settings, rotate the key, and never put it in variables, source files, workflow output, or the image.
 
-For the deployment flow, architecture diagram, and security controls/limitations, see [ARCHITECTURE.md](./ARCHITECTURE.md).
+For the deployment flow and security controls/limitations, see [ARCHITECTURE.md](./ARCHITECTURE.md) and open the [editable AWS architecture diagram](./deployment-architecture.drawio) in diagrams.net (draw.io).
 
 ### 1. Store the administrator credentials in AWS Secrets Manager
 

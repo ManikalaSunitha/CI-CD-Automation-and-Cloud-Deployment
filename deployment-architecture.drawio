@@ -1,0 +1,147 @@
+<mxfile host="app.diagrams.net" modified="2026-11-22T16:59:02.000Z" agent="Copilot" version="24.7.17" type="device">
+  <diagram id="secure-inventory-deployment" name="Deployment Architecture">
+    <mxGraphModel dx="1600" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title" value="Secure Inventory — Deployment Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="30" y="20" width="900" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="Target design • eu-north-1 • Manual workflow dispatch • Diagram distinguishes configured resources from pending setup" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=13;fontColor=#475569;" vertex="1" parent="1">
+          <mxGeometry x="32" y="60" width="1100" height="28" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="legend" value="Status legend&#xa;✓ Created / configured&#xa;○ Planned / not ready&#xa;! Verify before use" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#CBD5E1;fontSize=12;align=left;verticalAlign=middle;spacingLeft=12;" vertex="1" parent="1">
+          <mxGeometry x="1270" y="20" width="285" height="85" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="githubLane" value="GitHub • CI/CD" style="swimlane;html=1;rounded=1;startSize=34;horizontal=1;fillColor=#F8FAFC;swimlaneFillColor=#E2E8F0;strokeColor=#94A3B8;fontStyle=1;fontSize=15;fontColor=#0F172A;" vertex="1" parent="1">
+          <mxGeometry x="30" y="120" width="350" height="800" as="geometry"/>
+        </mxCell>
+        <mxCell id="repo" value="GitHub repository&#xa;Spring Boot source + workflow&#xa;main branch" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="githubLane">
+          <mxGeometry x="25" y="55" width="300" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="dispatch" value="Manual workflow dispatch&#xa;Select dev / qa / prod&#xa;deploy_to_ecs defaults to false" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#3B82F6;fontSize=12;" vertex="1" parent="githubLane">
+          <mxGeometry x="25" y="160" width="300" height="82" as="geometry"/>
+        </mxCell>
+        <mxCell id="gates" value="Quality gates (must pass)&#xa;• EarlyBird tracked-source secret scan&#xa;• Trivy filesystem/dependency/config scan&#xa;• Maven tests + JaCoCo ≥ 60% lines" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#10B981;fontSize=12;align=left;spacingLeft=12;" vertex="1" parent="githubLane">
+          <mxGeometry x="25" y="270" width="300" height="105" as="geometry"/>
+        </mxCell>
+        <mxCell id="sonar" value="SonarCloud Automatic Analysis&#xa;Independent scan; not an Actions gate" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#F59E0B;fontSize=12;" vertex="1" parent="githubLane">
+          <mxGeometry x="25" y="400" width="300" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="buildscan" value="Docker build → Trivy image scan&#xa;High/critical findings block push" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#10B981;fontSize=12;" vertex="1" parent="githubLane">
+          <mxGeometry x="25" y="495" width="300" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="githubawscreds" value="GitHub Actions secrets&#xa;Dedicated IAM user's long-lived key&#xa;Less secure than OIDC • rotate/restrict" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F97316;fontSize=11;" vertex="1" parent="githubLane">
+          <mxGeometry x="25" y="605" width="300" height="85" as="geometry"/>
+        </mxCell>
+        <mxCell id="summary" value="Run summary&#xa;Per-check result + image tag&#xa;ECS status or build-only skipped" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F5F9;strokeColor=#64748B;fontSize=12;" vertex="1" parent="githubLane">
+          <mxGeometry x="25" y="725" width="300" height="65" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="awsRegion" value="AWS account • Europe (Stockholm) eu-north-1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8FAFC;strokeColor=#FF9900;strokeWidth=2;fontStyle=1;fontSize=16;fontColor=#232F3E;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="410" y="120" width="1145" height="800" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ecrIcon" value="✓ Private ECR&#xa;secure-inventory" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecr;fillColor=#C7131F;strokeColor=#232F3E;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;outlineConnect=0;" vertex="1" parent="awsRegion">
+          <mxGeometry x="35" y="65" width="90" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="iamIcon" value="✓ Task execution role&#xa;ECR pull • logs • secret read" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.identity_and_access_management;fillColor=#DD344C;strokeColor=#232F3E;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;outlineConnect=0;" vertex="1" parent="awsRegion">
+          <mxGeometry x="175" y="65" width="90" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="secretIcon" value="✓ Secrets Manager&#xa;springboot/admin&#xa;shared demo credentials" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.secrets_manager;fillColor=#C7131F;strokeColor=#232F3E;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;outlineConnect=0;" vertex="1" parent="awsRegion">
+          <mxGeometry x="315" y="65" width="105" height="95" as="geometry"/>
+        </mxCell>
+        <mxCell id="secretNote" value="Demo choice: same admin secret for all environments. Prefer separate secrets/credentials before production." style="shape=note;whiteSpace=wrap;html=1;size=18;fillColor=#FFF7ED;strokeColor=#F97316;fontSize=11;" vertex="1" parent="awsRegion">
+          <mxGeometry x="445" y="75" width="260" height="65" as="geometry"/>
+        </mxCell>
+        <mxCell id="cloudwatchIcon" value="○ CloudWatch Logs&#xa;per service log groups" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch;fillColor=#8C4FFF;strokeColor=#232F3E;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;outlineConnect=0;" vertex="1" parent="awsRegion">
+          <mxGeometry x="735" y="65" width="100" height="90" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="network" value="VPC • subnets across eu-north-1a / 1b / 1c • Fargate tasks (subnet routing to verify)" style="swimlane;html=1;rounded=1;startSize=32;horizontal=1;fillColor=#F8FAFC;swimlaneFillColor=#E0F2FE;strokeColor=#38BDF8;fontStyle=1;fontSize=13;fontColor=#0C4A6E;" vertex="1" parent="awsRegion">
+          <mxGeometry x="30" y="190" width="1080" height="560" as="geometry"/>
+        </mxCell>
+        <mxCell id="cloudfrontIcon" value="○ CloudFront&#xa;HTTPS viewer URL&#xa;/dev • /qa • /prod" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudfront;fillColor=#8C4FFF;strokeColor=#232F3E;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;outlineConnect=0;" vertex="1" parent="network">
+          <mxGeometry x="35" y="65" width="110" height="105" as="geometry"/>
+        </mxCell>
+        <mxCell id="cfFunction" value="○ CloudFront path routing&#xa;Three origins + private custom headers&#xa;Strip environment path prefix" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#A855F7;fontSize=11;" vertex="1" parent="network">
+          <mxGeometry x="165" y="75" width="215" height="82" as="geometry"/>
+        </mxCell>
+        <mxCell id="albIcon" value="✓ ALB&#xa;HTTP origin only&#xa;listener setup: verify" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.application_load_balancer;fillColor=#8C4FFF;strokeColor=#232F3E;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;outlineConnect=0;" vertex="1" parent="network">
+          <mxGeometry x="405" y="65" width="110" height="105" as="geometry"/>
+        </mxCell>
+        <mxCell id="albWarning" value="! CloudFront → ALB is HTTP (not end-to-end TLS). Prefix list alone admits any CloudFront distribution; require origin-header rules." style="shape=note;whiteSpace=wrap;html=1;size=18;fillColor=#FEF2F2;strokeColor=#EF4444;fontSize=11;" vertex="1" parent="network">
+          <mxGeometry x="545" y="65" width="300" height="85" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ecsIcon" value="✓ ECS cluster&#xa;secure-inventory-cluster" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs;fillColor=#C7131F;strokeColor=#232F3E;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;outlineConnect=0;" vertex="1" parent="network">
+          <mxGeometry x="35" y="235" width="100" height="95" as="geometry"/>
+        </mxCell>
+        <mxCell id="envdev" value="○ dev ECS service&#xa;1 Fargate task • target: dev&#xa;EFS access point: /dev" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#3B82F6;fontSize=11;" vertex="1" parent="network">
+          <mxGeometry x="175" y="215" width="215" height="72" as="geometry"/>
+        </mxCell>
+        <mxCell id="envqa" value="○ QA ECS service&#xa;1 Fargate task • target: QA&#xa;EFS access point: /qa" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#3B82F6;fontSize=11;" vertex="1" parent="network">
+          <mxGeometry x="175" y="315" width="215" height="72" as="geometry"/>
+        </mxCell>
+        <mxCell id="envprod" value="○ prod ECS service&#xa;1 Fargate task • target: prod&#xa;EFS access point: /prod" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#3B82F6;fontSize=11;" vertex="1" parent="network">
+          <mxGeometry x="175" y="415" width="215" height="72" as="geometry"/>
+        </mxCell>
+        <mxCell id="tgDev" value="○ Target group&#xa;dev • HTTP:8080" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#3B82F6;fontSize=11;" vertex="1" parent="network">
+          <mxGeometry x="425" y="215" width="150" height="72" as="geometry"/>
+        </mxCell>
+        <mxCell id="tgQa" value="○ Target group&#xa;QA • HTTP:8080" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#3B82F6;fontSize=11;" vertex="1" parent="network">
+          <mxGeometry x="425" y="315" width="150" height="72" as="geometry"/>
+        </mxCell>
+        <mxCell id="tgProd" value="○ Target group&#xa;prod • HTTP:8080" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#3B82F6;fontSize=11;" vertex="1" parent="network">
+          <mxGeometry x="425" y="415" width="150" height="72" as="geometry"/>
+        </mxCell>
+        <mxCell id="efsIcon" value="✓ Encrypted EFS&#xa;Access points: /dev, /qa, /prod&#xa;POSIX UID:GID 10001:10001" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elastic_file_system;fillColor=#3F8624;strokeColor=#232F3E;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;outlineConnect=0;" vertex="1" parent="network">
+          <mxGeometry x="650" y="280" width="120" height="115" as="geometry"/>
+        </mxCell>
+        <mxCell id="appDev" value="○ dev Fargate task&#xa;Spring Boot • non-root • :8080&#xa;SQLite/uploads on /data/dev" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F97316;fontSize=11;" vertex="1" parent="network">
+          <mxGeometry x="825" y="195" width="225" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="appQa" value="○ QA Fargate task&#xa;Spring Boot • non-root • :8080&#xa;SQLite/uploads on /data/qa" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F97316;fontSize=11;" vertex="1" parent="network">
+          <mxGeometry x="825" y="300" width="225" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="appProd" value="○ prod Fargate task&#xa;Spring Boot • non-root • :8080&#xa;SQLite/uploads on /data/prod" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F97316;fontSize=11;" vertex="1" parent="network">
+          <mxGeometry x="825" y="405" width="225" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="efsCaveat" value="SQLite constraint: one active task per environment. EFS-backed SQLite is demo-grade; use managed PostgreSQL for production or scale-out." style="shape=note;whiteSpace=wrap;html=1;size=18;fillColor=#FFF7ED;strokeColor=#F97316;fontSize=11;" vertex="1" parent="network">
+          <mxGeometry x="650" y="490" width="400" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="statusBox" value="Configured: ECR • ECS cluster • EFS + access points • security groups • ALB + target groups • task execution role&#xa;Pending: CloudFront • ECS task definitions/services • final listener verification • ECR image push/deploy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#94A3B8;fontSize=12;align=left;spacingLeft=12;" vertex="1" parent="awsRegion">
+          <mxGeometry x="30" y="680" width="1080" height="78" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="edgeRepoDispatch" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#64748B;" edge="1" parent="1" source="repo" target="dispatch"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeDispatchGates" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#64748B;" edge="1" parent="1" source="dispatch" target="gates"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeSonar" value="independent" style="endArrow=open;dashed=1;html=1;strokeColor=#A16207;fontSize=10;" edge="1" parent="1" source="repo" target="sonar"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeGatesBuild" value="" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#64748B;" edge="1" parent="1" source="gates" target="buildscan"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeBuildEcr" value="push immutable commit tag" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#059669;fontSize=10;" edge="1" parent="1" source="buildscan" target="ecrIcon"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeCreds" value="IAM access key authentication" style="endArrow=open;dashed=1;html=1;strokeColor=#F97316;fontSize=10;" edge="1" parent="1" source="githubawscreds" target="ecrIcon"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeEcrEcs" value="selected image" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#059669;fontSize=10;" edge="1" parent="1" source="ecrIcon" target="ecsIcon"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeAlbCf" value="HTTPS viewer; HTTP origin" style="endArrow=block;html=1;strokeWidth=2;strokeColor=#7C3AED;fontSize=10;" edge="1" parent="network" source="cloudfrontIcon" target="albIcon"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeCfFunc" value="" style="endArrow=open;dashed=1;html=1;strokeColor=#7C3AED;" edge="1" parent="network" source="cloudfrontIcon" target="cfFunction"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeClusterDev" value="" style="endArrow=block;html=1;strokeColor=#3B82F6;" edge="1" parent="network" source="ecsIcon" target="envdev"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeClusterQa" value="" style="endArrow=block;html=1;strokeColor=#3B82F6;" edge="1" parent="network" source="ecsIcon" target="envqa"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeClusterProd" value="" style="endArrow=block;html=1;strokeColor=#3B82F6;" edge="1" parent="network" source="ecsIcon" target="envprod"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeAlbDev" value="header /dev" style="endArrow=block;html=1;strokeColor=#3B82F6;fontSize=9;" edge="1" parent="network" source="albIcon" target="tgDev"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeAlbQa" value="header /qa" style="endArrow=block;html=1;strokeColor=#3B82F6;fontSize=9;" edge="1" parent="network" source="albIcon" target="tgQa"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeAlbProd" value="header /prod" style="endArrow=block;html=1;strokeColor=#3B82F6;fontSize=9;" edge="1" parent="network" source="albIcon" target="tgProd"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeDevTask" value="" style="endArrow=block;html=1;strokeColor=#3B82F6;" edge="1" parent="network" source="tgDev" target="appDev"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeQaTask" value="" style="endArrow=block;html=1;strokeColor=#3B82F6;" edge="1" parent="network" source="tgQa" target="appQa"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeProdTask" value="" style="endArrow=block;html=1;strokeColor=#3B82F6;" edge="1" parent="network" source="tgProd" target="appProd"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeDataDev" value="" style="endArrow=both;html=1;dashed=1;strokeColor=#3F8624;" edge="1" parent="network" source="efsIcon" target="appDev"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeDataQa" value="" style="endArrow=both;html=1;dashed=1;strokeColor=#3F8624;" edge="1" parent="network" source="efsIcon" target="appQa"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeDataProd" value="" style="endArrow=both;html=1;dashed=1;strokeColor=#3F8624;" edge="1" parent="network" source="efsIcon" target="appProd"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeSecretDev" value="inject at startup" style="endArrow=open;html=1;dashed=1;strokeColor=#C7131F;fontSize=9;" edge="1" parent="awsRegion" source="secretIcon" target="appDev"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeSecretQa" value="" style="endArrow=open;html=1;dashed=1;strokeColor=#C7131F;" edge="1" parent="awsRegion" source="secretIcon" target="appQa"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeSecretProd" value="" style="endArrow=open;html=1;dashed=1;strokeColor=#C7131F;" edge="1" parent="awsRegion" source="secretIcon" target="appProd"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="edgeExecRole" value="GetSecretValue / ECR pull / logs" style="endArrow=open;html=1;dashed=1;strokeColor=#DD344C;fontSize=10;" edge="1" parent="awsRegion" source="iamIcon" target="secretIcon"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
