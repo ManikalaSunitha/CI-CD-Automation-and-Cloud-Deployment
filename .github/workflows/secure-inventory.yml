@@ -466,6 +466,7 @@ jobs:
       service_check_result: ${{ steps.service_check.outcome }}
       task_definition_result: ${{ steps.task_def.outcome }}
       ecs_update_result: ${{ steps.ecs_update.outcome }}
+      application_url: ${{ vars.APP_URL }}
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
@@ -585,6 +586,7 @@ jobs:
       SERVICE_CHECK_RESULT: ${{ needs.deploy-ecs.outputs.service_check_result }}
       TASK_DEFINITION_RESULT: ${{ needs.deploy-ecs.outputs.task_definition_result }}
       ECS_UPDATE_RESULT: ${{ needs.deploy-ecs.outputs.ecs_update_result }}
+      APPLICATION_URL: ${{ needs.deploy-ecs.outputs.application_url }}
       EVENT_NAME: ${{ github.event_name }}
       REF_NAME: ${{ github.ref_name }}
       COMMIT_SHA: ${{ github.sha }}
@@ -623,6 +625,13 @@ jobs:
           else:
               overall_result = os.environ.get("QUALITY_RESULT", "unknown")
 
+          application_url = value("APPLICATION_URL", "")
+          application_link = (
+              f"[Open deployed application]({application_url})"
+              if application_url
+              else "Not configured — set `APP_URL` in the `dev` GitHub environment."
+          )
+
           lines = [
               "# Secure Inventory — Development run",
               "",
@@ -637,6 +646,7 @@ jobs:
               f"| Commit | [`{value('COMMIT_SHA')[:12]}`]({value('RUN_URL')}) |",
               f"| Actor | `{value('ACTOR')}` |",
               f"| Workflow run | [Open run]({value('RUN_URL')}) |",
+              f"| Application | {application_link} |",
               "",
               "## Pipeline results",
               "",
@@ -656,6 +666,9 @@ jobs:
               f"| ECS update and stability wait | {status('ECS_UPDATE_RESULT', value('DEPLOY_RESULT'))} | Waits until the service is stable. |",
               "",
           ]
+
+          if os.environ.get("DEPLOY_ENABLED") == "true" and os.environ.get("DEPLOY_RESULT") == "success" and os.environ.get("APPLICATION_URL"):
+              lines.extend(["## Deployed application", "", f"[Open the DEV application]({os.environ['APPLICATION_URL']})"])
 
           if os.environ.get("DEPLOY_ENABLED") == "true" and os.environ.get("ECR_PUSH_RESULT") == "success":
               lines.extend(["## Published image", ""])

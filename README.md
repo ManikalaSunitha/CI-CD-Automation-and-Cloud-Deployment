@@ -62,6 +62,8 @@ The development workflow is [`./.github/workflows/secure-inventory.yml`](./.gith
 
 Production promotion is separate in [`./.github/workflows/secure-inventory-prod.yml`](./.github/workflows/secure-inventory-prod.yml). It is manually dispatched with the commit-based `main-<12-character-commit-sha>` tag shown in the successful development workflow summary. It pulls that image, resolves and scans its digest, then deploys that exact digest to the `prod` ECS service. Configure required reviewers and restrict deployment branches to `main` in the GitHub `prod` environment. Select a SHA-based tag from a successful dev run, not an arbitrary `latest` tag. The workflows do not delete older ECR images; configure an ECR lifecycle policy separately when you are ready to control image retention.
 
+QA promotion is a manual dispatch through [`./.github/workflows/secure-inventory-qa.yml`](./.github/workflows/secure-inventory-qa.yml). Select the commit-based `main-<12-character-commit-sha>` image tag from a successful DEV run; the workflow pulls and scans that image, resolves its digest, and deploys the same artifact to the separate `qa` ECS service. Test the QA application before manually promoting the image to PROD. Keep QA independent from DEV and PROD: use its own ECS service/task definition, Secrets Manager secret, EFS access point/data, target group, and routed application URL.
+
 SonarCloud Automatic Analysis runs independently on the project; it does not gate either workflow. EarlyBird scans the app repository's tracked files from the repository root, not the scanner's own checkout. Because this setup currently uses an IAM user instead of GitHub OIDC, AWS authentication uses that user's long-lived access key stored as GitHub Actions secrets. This is less secure than OIDC: use a dedicated least-privilege identity, protect access to the repository and its Actions settings, rotate the key, and never put it in variables, source files, workflow output, or the image.
 
 ### Security scan coverage and next improvements
@@ -154,10 +156,10 @@ In each GitHub environment's **Settings → Secrets and variables → Actions �
 
 Protect the repository and Actions settings so only trusted maintainers can change workflows or use these secrets. Restrict who can trigger workflows, require reviewers for `prod`, and rotate/delete the IAM access key when no longer needed. Anyone who can modify a workflow that receives these secrets may be able to use the IAM user's permissions.
 
-In each GitHub environment's **Settings → Secrets and variables → Actions → Variables**, set `AWS_REGION` to `eu-north-1`, `ECR_REPOSITORY` to `manikalasunitha/basic_spring_app`, and the four ECS variables listed below. For `ECR_REPOSITORY`, the variable **Name** remains `ECR_REPOSITORY` and its **Value** is the complete path; slashes are valid. Confirm that this exact repository exists in the account and region used by the workflow.
+In each GitHub environment's **Settings → Secrets and variables → Actions → Variables**, set `AWS_REGION` to `eu-north-1`, `ECR_REPOSITORY` to `manikalasunitha/basic_spring_app`, and the ECS variables listed below. For `ECR_REPOSITORY`, the variable **Name** remains `ECR_REPOSITORY` and its **Value** is the complete path; slashes are valid. Confirm that this exact repository exists in the account and region used by the workflow.
 Do not add `SONAR_TOKEN` or Sonar analysis variables for this Automatic Analysis setup. In SonarCloud, keep Automatic Analysis enabled for the project and monitor its analysis result in the SonarCloud project page. It runs separately from this workflow, so it does not block ECR publishing or ECS deployment. If SonarCloud reports that Automatic Analysis conflicts with a CI scanner, ensure the Sonar scan action remains removed from this workflow.
 
-Create GitHub **environments** named `dev` and `prod` (create `qa` when a QA workflow is added). Add the following variables to both environments; the ECR repository is shared, while the ECS values must point to the matching environment:
+Create GitHub **environments** named `dev` and `prod` (create `qa` when a QA workflow is added). Add the following variables to each environment; the ECR repository is shared, while the ECS values and `APP_URL` must point to the matching environment:
 
 | Environment variable | Value |
 |---|---|
@@ -167,16 +169,28 @@ Create GitHub **environments** named `dev` and `prod` (create `qa` when a QA wor
 | `ECS_SERVICE` | ECS service name |
 | `ECS_TASK_DEFINITION` | Existing task-definition family or ARN |
 | `ECS_CONTAINER_NAME` | App container name in that task definition |
+| `APP_URL` | Public HTTPS URL for this environment, including its path prefix if applicable |
 
-Restrict both environments to the `main` branch. Do not require manual reviewers for `dev` if you want its deployment to remain automatic; configure required reviewers for `prod`. Keep AWS account IDs, role ARNs, and infrastructure identifiers in variables; store only credentials/tokens as secrets.
+All three workflow summaries include a clickable application link after a successful deployment. Set `APP_URL` to the actual reachable URL; the workflows do not create or discover the URL. Restrict `dev`, `qa`, and `prod` to the `main` branch. Configure required reviewers for `prod`; QA may also have reviewers if you want approval before its manual promotion proceeds. Keep AWS account IDs, role ARNs, and infrastructure identifiers in variables; store only credentials/tokens as secrets.
+
+The ECS variables for the resources currently created in `eu-north-1` are:
+
+| Environment | `ECS_CLUSTER` | `ECS_SERVICE` | `ECS_TASK_DEFINITION` | `ECS_CONTAINER_NAME` |
+|---|---|---|---|---|
+| `dev` | `secure_inventory_cluster` | `dev-service` | `dev` | `dev` |
+| `qa` | `secure_inventory_cluster` | `qa-service` | `qa` | `qa` |
+| `prod` | `secure_inventory_cluster` | `prod-service` | `prod` | `prod` |
+
+Do not set `APP_URL` until the environment has a reachable viewer endpoint. The current ALB has only an HTTP listener and its security group permits port 80 from the CloudFront managed prefix list; there is not yet a CloudFront distribution. AWS currently blocks CloudFront creation for this account pending account verification. Direct access on the QA/PROD listener ports is not allowed by the current ALB security group. Request account verification through AWS Support before configuring the CloudFront URLs.
 
 ### 4. Run and verify deployment
 
 1. Confirm ECR, ECS, Secrets Manager, EFS, IAM, and the `dev` GitHub environment settings are configured. Check SonarCloud Automatic Analysis separately in its project.
 2. Merge application changes into `main`. The development workflow automatically runs checks, pushes the passing image, and deploys to dev.
 3. Copy the `main-<12-character-commit-sha>` image tag from the successful dev workflow summary.
-4. Select **Actions → Secure Inventory Production Deployment → Run workflow**, run it from `main`, and enter that exact tag. Complete the `prod` environment approval if required.
-5. Verify the ECS service is healthy behind the load balancer and sign in using the administrator credentials in that environment's Secrets Manager secret.
+4. Select **Actions → Secure Inventory QA Deployment → Run workflow**, run it from `main`, and enter the same tag. Verify the QA deployment summary and use its application link to test the application.
+5. After QA validation, select **Actions → Secure Inventory Production Deployment → Run workflow**, run it from `main`, and enter that same tag. Complete the `prod` environment approval if required.
+6. Verify each ECS service is healthy behind the load balancer and sign in using the administrator credentials for that environment's Secrets Manager secret.
 
 EarlyBird fails on medium-or-higher findings. The run on commit `e3737e4` failed because EarlyBird treated the AWS account number in the example ECR ARN as three possible national IDs (critical severity, low confidence); it also reported low-severity false positives for version tags that looked like email addresses, local HTTP examples, a `file://` CLI argument, and the intentional loopback-only Compose binding. The fixes keep the same behavior while avoiding those scanner patterns: use a caller-account IAM policy variable, pin the Trivy action by commit SHA, pass the task definition JSON directly to AWS CLI, omit explicit schemes in local-only examples, and assemble the loopback address from its prefix plus final octet. No real secret or personal identifier was found in that report. EarlyBird fails on medium-or-higher findings; Trivy fails on high/critical filesystem or container findings (ignoring unfixed vulnerabilities). Deployment is blocked if a scan, test, coverage check, or ECS stability wait fails. SonarCloud Automatic Analysis is monitored separately and is not a deployment gate in this workflow.
 # CI-CD-Automation-and-Cloud-Deployment
