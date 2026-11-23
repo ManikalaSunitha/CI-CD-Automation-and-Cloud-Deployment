@@ -48,6 +48,7 @@ jobs:
       filesystem_scan_result: ${{ steps.filesystem_scan.outcome }}
       filesystem_scan_details: ${{ steps.filesystem_scan_summary.outputs.details }}
       tests_coverage_result: ${{ steps.tests_coverage.outcome }}
+      sonar_result: ${{ steps.sonar.outcome }}
       test_metrics: ${{ steps.test_metrics.outputs.details }}
     steps:
       - name: Checkout source
@@ -211,6 +212,29 @@ jobs:
       - name: Run tests and enforce 60% minimum line coverage
         id: tests_coverage
         run: mvn --batch-mode --no-transfer-progress verify
+
+      - name: Run SonarCloud analysis and enforce quality gate
+        id: sonar
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${SONAR_TOKEN:?Set SONAR_TOKEN as a GitHub Actions repository secret}"
+          : "${SONAR_ORGANIZATION:?Set the SONAR_ORGANIZATION Actions variable}"
+          : "${SONAR_PROJECT_KEY:?Set the SONAR_PROJECT_KEY Actions variable}"
+
+          mvn --batch-mode --no-transfer-progress \
+            org.sonarsource.scanner.maven:sonar-maven-plugin:5.3.0.6276:sonar \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.organization="$SONAR_ORGANIZATION" \
+            -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.qualitygate.timeout=300
 
       - name: Summarize test and coverage reports
         id: test_metrics
@@ -653,6 +677,7 @@ jobs:
       EARLYBIRD_RESULT: ${{ needs.quality.outputs.earlybird_result }}
       FILESYSTEM_SCAN_RESULT: ${{ needs.quality.outputs.filesystem_scan_result }}
       TESTS_COVERAGE_RESULT: ${{ needs.quality.outputs.tests_coverage_result }}
+      SONAR_RESULT: ${{ needs.quality.outputs.sonar_result }}
       TEST_METRICS: ${{ needs.quality.outputs.test_metrics }}
       FILESYSTEM_SCAN_DETAILS: ${{ needs.quality.outputs.filesystem_scan_details }}
       ECR_LOGIN_RESULT: ${{ needs.build-scan-push.outputs.ecr_login_result }}
@@ -733,7 +758,7 @@ jobs:
               f"| EarlyBird tracked-source secret scan | {status('EARLYBIRD_RESULT', value('QUALITY_RESULT'))} | Findings are listed in the quality job summary. |",
               f"| Trivy filesystem/dependency/configuration scan | {status('FILESYSTEM_SCAN_RESULT', value('QUALITY_RESULT'))} | See the detailed findings below. |",
               f"| Maven tests and JaCoCo coverage gate | {status('TESTS_COVERAGE_RESULT', value('QUALITY_RESULT'))} | See test counts and coverage below. |",
-              f"| SonarCloud Automatic Analysis | ℹ️ Independent | Not a deployment gate; review the SonarCloud project separately. |",
+              f"| SonarCloud quality gate | {status('SONAR_RESULT', value('QUALITY_RESULT'))} | SonarCloud must pass before publishing or deployment; fork PR scans are skipped because GitHub withholds secrets. |",
               f"| ECR login | {status('ECR_LOGIN_RESULT', value('BUILD_RESULT'))} | AWS authentication and registry login. |",
               f"| ECR repository preflight | {status('ECR_REPOSITORY_CHECK_RESULT', value('BUILD_RESULT'))} | Account, region, and repository URI verified. |",
               f"| Docker image build | {status('IMAGE_BUILD_RESULT', value('BUILD_RESULT'))} | Builds the application container. |",
