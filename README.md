@@ -156,10 +156,10 @@ In each GitHub environment's **Settings → Secrets and variables → Actions �
 
 Protect the repository and Actions settings so only trusted maintainers can change workflows or use these secrets. Restrict who can trigger workflows, require reviewers for `prod`, and rotate/delete the IAM access key when no longer needed. Anyone who can modify a workflow that receives these secrets may be able to use the IAM user's permissions.
 
-Set the shared repository variables `AWS_REGION=eu-north-1`, `ECR_REPOSITORY=manikalasunitha/basic_spring_app`, `ECS_CLUSTER=secure_inventory_cluster`, and `APP_HOST=secure-inventory-alb-1103558434.eu-north-1.elb.amazonaws.com` under **Settings → Secrets and variables → Actions → Variables**. For `ECR_REPOSITORY`, the variable value is the complete path; slashes are valid. Confirm that this exact repository exists in the account and region used by the workflow.
+Set the shared repository variables `AWS_REGION=eu-north-1`, `ECR_REPOSITORY=manikalasunitha/basic_spring_app`, and `ECS_CLUSTER=secure_inventory_cluster` under **Settings → Secrets and variables → Actions → Variables**. For `ECR_REPOSITORY`, the variable value is the complete path; slashes are valid. Confirm that this exact repository exists in the account and region used by the workflow.
 Do not add `SONAR_TOKEN` or Sonar analysis variables for this Automatic Analysis setup. In SonarCloud, keep Automatic Analysis enabled for the project and monitor its analysis result in the SonarCloud project page. It runs separately from this workflow, so it does not block ECR publishing or ECS deployment. If SonarCloud reports that Automatic Analysis conflicts with a CI scanner, ensure the Sonar scan action remains removed from this workflow.
 
-Create GitHub **environments** named `dev`, `qa`, and `prod`. Add the environment-specific ECS values and application listener port to each environment:
+Create GitHub **environments** named `dev`, `qa`, and `prod`. Add the environment-specific ECS values to each environment:
 
 | Environment variable | Value |
 |---|---|
@@ -169,9 +169,8 @@ Create GitHub **environments** named `dev`, `qa`, and `prod`. Add the environmen
 | `ECS_SERVICE` | ECS service name |
 | `ECS_TASK_DEFINITION` | Existing task-definition family or ARN |
 | `ECS_CONTAINER_NAME` | App container name in that task definition |
-| `APP_PORT` | `80` for DEV, `81` for QA, `82` for PROD |
 
-All three workflow summaries include a clickable HTTP link showing the ALB DNS hostname and environment listener port after a successful deployment. This ALB hostname resolves to changing AWS IP addresses; do not pin a resolved IP. The ALB security group currently permits inbound HTTP on ports 80-82 from anywhere for testing. HTTP is unencrypted: do not use real credentials or transmit sensitive data. Restrict access to your IP or configure HTTPS before using this beyond temporary testing. Restrict `dev`, `qa`, and `prod` to the `main` branch. Configure required reviewers for `prod`; QA may also have reviewers if you want approval before its manual promotion proceeds. Keep AWS account IDs, role ARNs, and infrastructure identifiers in variables; store only credentials/tokens as secrets.
+After a successful deployment, each workflow queries the ECS service's target group and forwarding listener to resolve the ALB DNS hostname, protocol, and port for the run summary. No `APP_HOST`, `APP_PORT`, or `APP_URL` variable is needed. This ALB hostname resolves to changing AWS IP addresses; do not pin a resolved IP. The ALB security group currently permits inbound HTTP on ports 80-82 from anywhere for testing. HTTP is unencrypted: do not use real credentials or transmit sensitive data. Restrict access to your IP or configure HTTPS before using this beyond temporary testing. Restrict `dev`, `qa`, and `prod` to the `main` branch. Configure required reviewers for `prod`; QA may also have reviewers if you want approval before its manual promotion proceeds. Keep AWS account IDs, role ARNs, and infrastructure identifiers in variables; store only credentials/tokens as secrets.
 
 The ECS variables for the resources currently created in `eu-north-1` are:
 
@@ -181,14 +180,14 @@ The ECS variables for the resources currently created in `eu-north-1` are:
 | `qa` | `secure_inventory_cluster` | `qa-service` | `qa` | `qa` |
 | `prod` | `secure_inventory_cluster` | `prod-service` | `prod` | `prod` |
 
-The ECS task IP is dynamic and should not be used as the deployment URL. Use the ALB hostname plus the environment listener port shown in the summary.
+The ECS task IP is dynamic and should not be used as the deployment URL. The workflow discovers the current ALB DNS hostname and the listener that forwards to that service after deployment.
 
 ### 4. Run and verify deployment
 
 1. Confirm ECR, ECS, Secrets Manager, EFS, IAM, and the `dev` GitHub environment settings are configured. Check SonarCloud Automatic Analysis separately in its project.
 2. Merge application changes into `main`. The development workflow automatically runs checks, pushes the passing image, and deploys to dev.
-3. Copy the `main-<12-character-commit-sha>` image tag from the successful dev workflow summary.
-4. Select **Actions → Secure Inventory QA Deployment → Run workflow**, run it from `main`, and enter the same tag. Verify the QA deployment summary and use its application link to test the application.
+3. In the successful dev workflow summary, copy **Image tag to copy into the QA `image_tag` input** (for example, `main-<12-character-commit-sha>`). The full source commit SHA and ECR image URI are also shown for reference.
+4. Select **Actions → Secure Inventory QA Deployment → Run workflow**, run it from `main`, and paste that image tag into `image_tag`. The QA workflow pulls and scans that already-published image, resolves its immutable digest, and deploys that digest without rebuilding. Verify the QA deployment summary and use its application link to test the application.
 5. After QA validation, select **Actions → Secure Inventory Production Deployment → Run workflow**, run it from `main`, and enter that same tag. Complete the `prod` environment approval if required.
 6. Verify each ECS service is healthy behind the load balancer and sign in using the administrator credentials for that environment's Secrets Manager secret.
 

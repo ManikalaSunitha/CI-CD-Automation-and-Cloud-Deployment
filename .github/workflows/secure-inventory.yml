@@ -466,8 +466,7 @@ jobs:
       service_check_result: ${{ steps.service_check.outcome }}
       task_definition_result: ${{ steps.task_def.outcome }}
       ecs_update_result: ${{ steps.ecs_update.outcome }}
-      application_host: ${{ vars.APP_HOST }}
-      application_port: ${{ vars.APP_PORT }}
+      service_url: ${{ steps.service_endpoint.outputs.url }}
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
@@ -555,6 +554,84 @@ jobs:
             --no-cli-pager
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
 
+      - name: Resolve deployed service URL
+        id: service_endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          def aws_json(*args):
+              result = subprocess.run(
+                  ["aws", *args, "--region", os.environ["AWS_REGION"], "--output", "json"],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+              return json.loads(result.stdout)
+
+          service = aws_json(
+              "ecs", "describe-services",
+              "--cluster", os.environ["ECS_CLUSTER"],
+              "--services", os.environ["ECS_SERVICE"],
+          )["services"][0]
+          target_groups = {
+              item.get("targetGroupArn")
+              for item in service.get("loadBalancers", [])
+              if item.get("targetGroupArn")
+          }
+          if len(target_groups) != 1:
+              raise SystemExit(f"Expected one load-balancer target group for the ECS service; found {len(target_groups)}.")
+
+          target_group = aws_json(
+              "elbv2", "describe-target-groups",
+              "--target-group-arns", next(iter(target_groups)),
+          )["TargetGroups"][0]
+          load_balancers = target_group.get("LoadBalancerArns", [])
+          if len(load_balancers) != 1:
+              raise SystemExit(f"Expected one load balancer for the service target group; found {len(load_balancers)}.")
+
+          load_balancer = aws_json(
+              "elbv2", "describe-load-balancers",
+              "--load-balancer-arns", load_balancers[0],
+          )["LoadBalancers"][0]
+          matching_listeners = []
+          for listener in aws_json(
+              "elbv2", "describe-listeners",
+              "--load-balancer-arn", load_balancers[0],
+          )["Listeners"]:
+              rules = aws_json(
+                  "elbv2", "describe-rules",
+                  "--listener-arn", listener["ListenerArn"],
+              )["Rules"]
+              forwards_to_target = any(
+                  action.get("TargetGroupArn") in target_groups
+                  or any(
+                      item.get("TargetGroupArn") in target_groups
+                      for item in action.get("ForwardConfig", {}).get("TargetGroups", [])
+                  )
+                  for rule in rules
+                  for action in rule.get("Actions", [])
+              )
+              if forwards_to_target:
+                  matching_listeners.append(listener)
+
+          if len(matching_listeners) != 1:
+              raise SystemExit(f"Expected one listener forwarding to the service; found {len(matching_listeners)}.")
+          listener = matching_listeners[0]
+          scheme = {"HTTP": "http", "HTTPS": "https"}.get(listener["Protocol"])
+          if not scheme:
+              raise SystemExit(f"Unsupported listener protocol for application URL: {listener['Protocol']}.")
+
+          url = f"{scheme}://{load_balancer['DNSName']}:{listener['Port']}/"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"url={url}\n")
+          print(f"Resolved deployed ECS service URL: {url}")
+          PY
+
   summary:
     name: Run summary
     if: ${{ always() }}
@@ -587,13 +664,13 @@ jobs:
       SERVICE_CHECK_RESULT: ${{ needs.deploy-ecs.outputs.service_check_result }}
       TASK_DEFINITION_RESULT: ${{ needs.deploy-ecs.outputs.task_definition_result }}
       ECS_UPDATE_RESULT: ${{ needs.deploy-ecs.outputs.ecs_update_result }}
-      APPLICATION_HOST: ${{ needs.deploy-ecs.outputs.application_host }}
-      APPLICATION_PORT: ${{ needs.deploy-ecs.outputs.application_port }}
+      APPLICATION_URL: ${{ needs.deploy-ecs.outputs.service_url }}
       EVENT_NAME: ${{ github.event_name }}
       REF_NAME: ${{ github.ref_name }}
       COMMIT_SHA: ${{ github.sha }}
       ACTOR: ${{ github.actor }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      QA_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/secure-inventory-qa.yml
     steps:
       - name: Publish workflow summary
         shell: bash
@@ -627,17 +704,10 @@ jobs:
           else:
               overall_result = os.environ.get("QUALITY_RESULT", "unknown")
 
-          application_host = value("APPLICATION_HOST", "")
-          application_port = value("APPLICATION_PORT", "")
-          application_url = (
-              f"http://{application_host}:{application_port}/"
-              if application_host and application_port
-              else ""
-          )
           application_link = (
-              f"[{application_host}:{application_port}]({application_url})"
-              if application_url
-              else "Not configured — set `APP_HOST` and `APP_PORT` in the `dev` GitHub environment."
+              f"[{value('APPLICATION_URL')}]({value('APPLICATION_URL')})"
+              if value("APPLICATION_URL", "")
+              else "Unavailable — service URL discovery did not complete."
           )
 
           lines = [
@@ -654,7 +724,7 @@ jobs:
               f"| Commit | [`{value('COMMIT_SHA')[:12]}`]({value('RUN_URL')}) |",
               f"| Actor | `{value('ACTOR')}` |",
               f"| Workflow run | [Open run]({value('RUN_URL')}) |",
-              f"| Application endpoint | {application_link} |",
+              f"| Deployed service URL | {application_link} |",
               "",
               "## Pipeline results",
               "",
@@ -681,16 +751,19 @@ jobs:
           if os.environ.get("DEPLOY_ENABLED") == "true" and os.environ.get("ECR_PUSH_RESULT") == "success":
               lines.extend(["## Published image", ""])
               if os.environ.get("IMAGE_TAG"):
-                  lines.append(f"- **Tag:** `{os.environ['IMAGE_TAG']}`")
+                  lines.append(f"- **Image tag to copy into the QA `image_tag` input:** `{os.environ['IMAGE_TAG']}`")
+              if os.environ.get("COMMIT_SHA"):
+                  lines.append(f"- **Source commit SHA:** `{os.environ['COMMIT_SHA']}`")
               if os.environ.get("IMAGE_URI"):
                   lines.append(f"- **Image URI:** `{os.environ['IMAGE_URI']}`")
               if os.environ.get("IMAGE_TAG"):
-                  lines.append("- Use this commit-based tag to request a manual production promotion; the production workflow records and deploys the resolved digest.")
+                  lines.append(f"- **Promote to QA:** [Open the QA deployment workflow]({os.environ['QA_WORKFLOW_URL']}), run it from `main`, and paste the image tag above.")
+                  lines.append("- QA verifies and scans the selected image, then deploys its resolved digest. Use the same tag for a later production promotion.")
           elif os.environ.get("DEPLOY_ENABLED") == "true":
               lines.extend([
                   "## Image publishing",
                   "",
-                  "No image was successfully pushed. Do not start a production promotion from this run.",
+                  "No image was successfully pushed. Do not start a QA or production promotion from this run.",
               ])
           else:
               lines.extend([
