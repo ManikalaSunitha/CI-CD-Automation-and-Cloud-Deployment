@@ -1,11 +1,16 @@
 name: Secure Inventory Production Deployment
-run-name: 'Deploy Secure Inventory to prod / ${{ inputs.image_tag }}'
+run-name: 'Deploy Secure Inventory to prod / ${{ inputs.source_branch }} / ${{ inputs.image_tag }}'
 
 on:
   workflow_dispatch:
     inputs:
+      source_branch:
+        description: Branch used to build the DEV image being promoted
+        required: true
+        type: string
+        default: main
       image_tag:
-        description: Commit-based main-<12-character-sha> tag from a successful dev deployment
+        description: Commit-based <branch>-<12-character-commit-sha> tag from a successful dev deployment
         required: true
         type: string
 
@@ -32,7 +37,9 @@ jobs:
       ECS_TASK_DEFINITION: ${{ vars.ECS_TASK_DEFINITION }}
       ECS_CONTAINER_NAME: ${{ vars.ECS_CONTAINER_NAME }}
       IMAGE_TAG: ${{ inputs.image_tag }}
+      SOURCE_BRANCH: ${{ inputs.source_branch }}
     outputs:
+      source_commit: ${{ steps.image-tag.outputs.source_commit }}
       ecr_login_result: ${{ steps.ecr-login.outcome }}
       image_pull_result: ${{ steps.image.outcome }}
       image_digest: ${{ steps.image.outputs.uri }}
@@ -45,13 +52,18 @@ jobs:
       service_url: ${{ steps.service-endpoint.outputs.url }}
     steps:
       - name: Validate selected image tag
+        id: image-tag
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$IMAGE_TAG" =~ ^main-[0-9a-f]{12}$ ]]; then
-            echo "::error::Select a main-<12-character-commit-sha> image tag from a successful dev workflow run."
+          safe_branch="$(printf '%s' "$SOURCE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g' | cut -c1-80)"
+          tag_branch="${IMAGE_TAG%-????????????}"
+          source_commit="${IMAGE_TAG##*-}"
+          if [[ "$tag_branch" != "$safe_branch" ]] || [[ ! "$source_commit" =~ ^[0-9a-f]{12}$ ]]; then
+            echo "::error::The image tag must match the selected source branch and end with the 12-character commit SHA from a successful dev workflow run."
             exit 1
           fi
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -359,8 +371,9 @@ jobs:
       ECS_SERVICE: ${{ needs.deploy.outputs.ecs_service }}
       APPLICATION_URL: ${{ needs.deploy.outputs.service_url }}
       EVENT_NAME: ${{ github.event_name }}
-      REF_NAME: ${{ github.ref_name }}
-      COMMIT_SHA: ${{ github.sha }}
+      REF_NAME: ${{ inputs.source_branch }}
+      COMMIT_SHA: ${{ needs.deploy.outputs.source_commit }}
+      SOURCE_BRANCH: ${{ inputs.source_branch }}
       ACTOR: ${{ github.actor }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
