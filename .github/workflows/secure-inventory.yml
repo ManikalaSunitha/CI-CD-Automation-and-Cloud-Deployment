@@ -1,7 +1,14 @@
 name: Secure Inventory Development CI/CD
-run-name: 'Secure Inventory / dev / ${{ github.event_name }}'
+run-name: 'Secure Inventory / dev / ${{ github.event_name }} / ${{ inputs.source_branch || github.ref_name }}'
 
 on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: Branch containing the application code to deploy
+        type: string
+        required: true
+        default: main
   push:
     branches:
       - main
@@ -44,6 +51,8 @@ jobs:
     timeout-minutes: 30
     outputs:
       image_tag: ${{ steps.meta.outputs.tag }}
+      source_ref: ${{ steps.meta.outputs.source_ref }}
+      source_commit: ${{ steps.meta.outputs.source_commit }}
       earlybird_result: ${{ steps.earlybird.outcome }}
       filesystem_scan_result: ${{ steps.filesystem_scan.outcome }}
       filesystem_scan_details: ${{ steps.filesystem_scan_summary.outputs.details }}
@@ -54,16 +63,24 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_branch || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Generate commit-based image tag
         id: meta
+        env:
+          SOURCE_BRANCH: ${{ inputs.source_branch || github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
-          safe_branch="$(printf '%s' "$GITHUB_REF_NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g' | cut -c1-80)"
-          echo "tag=${safe_branch}-$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          safe_branch="$(printf '%s' "$SOURCE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g' | cut -c1-80)"
+          source_commit="$(git rev-parse HEAD)"
+          {
+            echo "tag=${safe_branch}-${source_commit:0:12}"
+            echo "source_ref=$SOURCE_BRANCH"
+            echo "source_commit=$source_commit"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Go for EarlyBird
         uses: actions/setup-go@v5
@@ -288,7 +305,7 @@ jobs:
 
   build-scan-push:
     name: Build, scan, and push dev image
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -310,6 +327,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_branch || github.sha }}
           persist-credentials: false
 
       - name: Configure AWS credentials for ECR
@@ -668,7 +686,7 @@ jobs:
       contents: read
     env:
       TARGET_ENVIRONMENT: dev
-      DEPLOY_ENABLED: ${{ github.event_name == 'push' }}
+      DEPLOY_ENABLED: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
       QUALITY_RESULT: ${{ needs.quality.result }}
       BUILD_RESULT: ${{ needs.build-scan-push.result }}
       DEPLOY_RESULT: ${{ needs.deploy-ecs.result }}
@@ -691,8 +709,8 @@ jobs:
       ECS_UPDATE_RESULT: ${{ needs.deploy-ecs.outputs.ecs_update_result }}
       APPLICATION_URL: ${{ needs.deploy-ecs.outputs.service_url }}
       EVENT_NAME: ${{ github.event_name }}
-      REF_NAME: ${{ github.ref_name }}
-      COMMIT_SHA: ${{ github.sha }}
+      REF_NAME: ${{ needs.quality.outputs.source_ref }}
+      COMMIT_SHA: ${{ needs.quality.outputs.source_commit }}
       ACTOR: ${{ github.actor }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       QA_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/secure-inventory-qa.yml

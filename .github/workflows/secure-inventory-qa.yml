@@ -1,11 +1,16 @@
 name: Secure Inventory QA Deployment
-run-name: 'Deploy Secure Inventory to qa / ${{ inputs.image_tag }}'
+run-name: 'Deploy Secure Inventory to qa / ${{ inputs.source_branch }} / ${{ inputs.image_tag }}'
 
 on:
   workflow_dispatch:
     inputs:
+      source_branch:
+        description: Branch used to build the DEV image being promoted
+        required: true
+        type: string
+        default: main
       image_tag:
-        description: Commit-based main-<12-character-commit-sha> tag from a successful dev deployment
+        description: Commit-based <branch>-<12-character-commit-sha> tag from a successful dev deployment
         required: true
         type: string
 
@@ -34,6 +39,7 @@ jobs:
       IMAGE_TAG: ${{ inputs.image_tag }}
     outputs:
       image_tag: ${{ steps.image-tag.outputs.tag }}
+      source_commit: ${{ steps.image-tag.outputs.source_commit }}
       image_digest: ${{ steps.image.outputs.uri }}
       ecr_login_result: ${{ steps.ecr-login.outcome }}
       image_pull_result: ${{ steps.image.outcome }}
@@ -46,14 +52,22 @@ jobs:
     steps:
       - name: Validate selected image tag
         id: image-tag
+        env:
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$IMAGE_TAG" =~ ^main-[0-9a-f]{12}$ ]]; then
-            echo "::error::Select a main-<12-character-commit-sha> image tag from a successful dev workflow run."
+          safe_branch="$(printf '%s' "$SOURCE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g' | cut -c1-80)"
+          tag_branch="${IMAGE_TAG%-????????????}"
+          source_commit="${IMAGE_TAG##*-}"
+          if [[ "$tag_branch" != "$safe_branch" ]] || [[ ! "$source_commit" =~ ^[0-9a-f]{12}$ ]]; then
+            echo "::error::The image tag must match the selected source branch and end with the 12-character commit SHA from a successful dev workflow run."
             exit 1
           fi
-          echo "tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$IMAGE_TAG"
+            echo "source_commit=$source_commit"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -282,7 +296,8 @@ jobs:
       ECS_UPDATE_RESULT: ${{ needs.deploy.outputs.ecs_update_result }}
       ECS_SERVICE: ${{ needs.deploy.outputs.ecs_service }}
       APPLICATION_URL: ${{ needs.deploy.outputs.service_url }}
-      SOURCE_COMMIT: ${{ inputs.image_tag }}
+      SOURCE_BRANCH: ${{ inputs.source_branch }}
+      SOURCE_COMMIT: ${{ needs.deploy.outputs.source_commit }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Publish QA deployment summary
@@ -325,7 +340,8 @@ jobs:
               "| Field | Value |",
               "|---|---|",
               f"| Promoted DEV image tag | `{markdown(image_tag)}` |",
-              f"| Source commit | `{markdown(os.environ.get('SOURCE_COMMIT', '').removeprefix('main-'))}` |",
+              f"| Source branch | `{markdown(os.environ.get('SOURCE_BRANCH'))}` |",
+              f"| Source commit | `{markdown(os.environ.get('SOURCE_COMMIT'))}` |",
               f"| Deployed image tag | `{markdown(os.environ.get('IMAGE_TAG'))}` |",
               f"| Image digest | `{markdown(os.environ.get('IMAGE_DIGEST'))}` |",
               f"| QA ECS service | `{markdown(os.environ.get('ECS_SERVICE'))}` |",
